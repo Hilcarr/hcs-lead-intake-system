@@ -1,0 +1,5 @@
+﻿01_private_core/
+*.env
+.env
+credentials*
+backups/
