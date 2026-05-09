@@ -1,9 +1,8 @@
-
 # Lead Intake AI System
 
 ![Status](https://img.shields.io/badge/status-production--tested-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-n8n-orange)
-![AI](https://img.shields.io/badge/AI-OpenAI-blue)
+![AI](https://img.shields.io/badge/AI-OpenAI%20%7C%20Whisper-blue)
 ![License](https://img.shields.io/badge/license-Portfolio-lightgrey)
 
 AI-powered lead intake, qualification, voice capture, and business analysis automation platform built with n8n, Telegram, Google Sheets, OpenAI, and Whisper.
@@ -14,7 +13,7 @@ AI-powered lead intake, qualification, voice capture, and business analysis auto
 
 ---
 
-# Overview
+## Overview
 
 The Lead Intake AI System is a modular automation architecture designed to capture, organize, enrich, and analyze client information through conversational workflows.
 
@@ -31,7 +30,7 @@ The system was designed as a real-world automation solution focused on reducing 
 
 ---
 
-# Core Architecture
+## Core Architecture
 
 ```text
 FLOW_01_TELEGRAM_INTAKE
@@ -39,13 +38,13 @@ FLOW_01_TELEGRAM_INTAKE
 FLOW_02_AI_ANALYSIS
         ↓
 FLOW_03_FOLLOWUP_WINDOW
-````
+```
 
 ---
 
-# Main Components
+## Main Components
 
-# FLOW_01 — Telegram Intake & Qualification
+### FLOW_01 — Telegram Intake & Qualification
 
 Handles:
 
@@ -58,7 +57,7 @@ Handles:
 * Google Sheets synchronization
 * initial AI summary generation
 
-## Key Features
+#### Key Features
 
 * Multilingual support (ES / EN)
 * Text + Voice intake
@@ -67,21 +66,21 @@ Handles:
 * Lead persistence
 * Automated question flow
 
-### Architecture Overview
+#### Architecture Overview
 
-![FLOW\_01](./06_assets/flow_01_overview.png)
+![FLOW_01](./06_assets/flow_01_overview.png)
 
-### Voice Processing
+#### Voice Processing
 
-![FLOW\_01\_VOICE](./06_assets/flow_01_voice_processing.png)
+![FLOW_01_VOICE](./06_assets/flow_01_voice_processing.png)
 
-### AI Summary Generation
+#### AI Summary Generation
 
-![FLOW\_01\_AI](./06_assets/flow_01_ai_summary.png)
+![FLOW_01_AI](./06_assets/flow_01_ai_summary.png)
 
 ---
 
-# FLOW_02 — AI Analysis Engine
+### FLOW_02 — AI Analysis Engine
 
 Handles:
 
@@ -94,7 +93,7 @@ Handles:
 * business complexity detection
 * automated consultant summary generation
 
-## Key Features
+#### Key Features
 
 * Incremental analysis logic
 * Context hashing
@@ -103,25 +102,25 @@ Handles:
 * Intelligent change detection
 * Internal reporting generation
 
-### Architecture Overview
+#### Architecture Overview
 
-![FLOW\_02](./06_assets/flow_02_overview.png)
+![FLOW_02](./06_assets/flow_02_overview.png)
 
-### Context Engine
+#### Context Engine
 
-![FLOW\_02\_CONTEXT](./06_assets/flow_02_context_engine.png)
+![FLOW_02_CONTEXT](./06_assets/flow_02_context_engine.png)
 
-### Analysis Pipeline
+#### Analysis Pipeline
 
-![FLOW\_02\_PIPELINE](./06_assets/flow_02_analysis_pipeline.png)
+![FLOW_02_PIPELINE](./06_assets/flow_02_analysis_pipeline.png)
 
-### Pricing Engine
+#### Pricing Engine
 
-![FLOW\_02\_PRICING](./06_assets/flow_02_pricing_engine.png)
+![FLOW_02_PRICING](./06_assets/flow_02_pricing_engine.png)
 
 ---
 
-# FLOW_03 — Follow-Up Window Management
+### FLOW_03 — Follow-Up Window Management
 
 Handles:
 
@@ -133,7 +132,7 @@ Handles:
 * lead reopening protection
 * extra information registration
 
-## Key Features
+#### Key Features
 
 * Temporary follow-up windows
 * Automatic expiration logic
@@ -142,29 +141,29 @@ Handles:
 * Duplicate protection
 * Voice extra processing
 
-### Architecture Overview
+#### Architecture Overview
 
-![FLOW\_03](./06_assets/flow_03_overview.png)
+![FLOW_03](./06_assets/flow_03_overview.png)
 
-### Window Control
+#### Window Control
 
-![FLOW\_03\_WINDOW](./06_assets/flow_03_window_control.png)
+![FLOW_03_WINDOW](./06_assets/flow_03_window_control.png)
 
-### Timeout Logic
+#### Timeout Logic
 
-![FLOW\_03\_TIMEOUT](./06_assets/flow_03_timeout_logic.png)
+![FLOW_03_TIMEOUT](./06_assets/flow_03_timeout_logic.png)
 
-### Voice Extras Processing
+#### Voice Extras Processing
 
-![FLOW\_03\_VOICE](./06_assets/flow_03_voice_extras.png)
+![FLOW_03_VOICE](./06_assets/flow_03_voice_extras.png)
 
 ---
 
-# Technologies Used
+## Technologies Used
 
 * n8n
 * Telegram Bot API
-* OpenAI API
+* OpenAI API (GPT)
 * Whisper Transcription
 * Google Sheets
 * JavaScript
@@ -173,7 +172,7 @@ Handles:
 
 ---
 
-# Project Structure
+## Project Structure
 
 ```text
 lead-intake-ai-system/
@@ -188,7 +187,7 @@ lead-intake-ai-system/
 
 ---
 
-# Security & Privacy
+## Security & Privacy
 
 This repository is presented as a technical showcase and portfolio project.
 
@@ -204,9 +203,9 @@ Sensitive production elements are intentionally excluded, including:
 
 ---
 
-# Current Status
+## Current Status
 
-## Status: Advanced Prototype / Production-Tested
+### Status: Advanced Prototype / Production-Tested
 
 The system has been tested with multiple real users and includes:
 
@@ -228,7 +227,7 @@ Additional improvements planned:
 
 ---
 
-# Future Roadmap
+## Future Roadmap
 
 * Supabase migration
 * Vector database integration
@@ -241,21 +240,17 @@ Additional improvements planned:
 
 ---
 
-# Author
+## Author
 
 Developed by HCS Logic
 AI Automation & Business Process Engineering
 
-Founder:
-Hildegard Carradini Sanchez
+Founder: Hildegard Carradini Sanchez
 
 ---
 
-# License
+## License
 
 This repository is shared for portfolio and demonstration purposes only.
 
 Commercial reuse, redistribution, or reproduction of proprietary workflow logic without authorization is not permitted.
-
-```
-```
