@@ -1,4 +1,4 @@
-````markdown
+
 # Lead Intake AI System
 
 ![Status](https://img.shields.io/badge/status-production--tested-brightgreen)
