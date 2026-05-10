@@ -1,0 +1,2667 @@
+{
+  "name": "FLOW_02_AI_ANALYSIS",
+  "nodes": [
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{ Number($json.chat_id) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1408,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_001",
+      "name": "GS_Lead_Lookup",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Raw_Transcription",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{ $json.chat_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1232,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_002",
+      "name": "GS_Transcript_Lookup"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Analysis",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{$json.chat_id}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1040,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_003",
+      "name": "GS_Flow2Analysis_Lookup",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Extras",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{ $('SET_Input').item.json.chat_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -848,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_004",
+      "name": "GS_Extras_GetMany",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// CODE_Build_Context (n8n Code node)\n// ✅ SIN PRICING (pricing se mueve a CODE_Pricing_Compute)\n// ✅ Mantiene: hashes, detección cambios, analysis_mode, FIX Flow3 close (solo 1 vez), context_summary_for_ai\n// ✅ Incluye: profile/complexity/pricing_key (solo para lookup en Pricing_Base)\n// ✅ FIX NUEVO: si viene desde Flow3 (source=flow3_done), forzar análisis completo\n\nfunction safeStr(v) {\n  if (v === null || v === undefined) return '';\n  return String(v);\n}\n\nfunction trimText(text, maxLen) {\n  const t = safeStr(text);\n  if (!maxLen || maxLen <= 0) return t;\n  return t.length > maxLen ? t.slice(0, maxLen) + '…' : t;\n}\n\n// Hash simple (determinista) para comparar cambios sin dependencias externas\nfunction simpleHash(str) {\n  const s = safeStr(str);\n  let h = 0;\n  for (let i = 0; i < s.length; i++) {\n    h = ((h << 5) - h) + s.charCodeAt(i);\n    h |= 0; // 32-bit\n  }\n  return String(h);\n}\n\n// ===============================\n// 1) Inputs base desde SET_Input\n// ===============================\nconst setInput = $node[\"SET_Input\"]?.json ?? {};\nconst chat_id = safeStr(setInput.chat_id);\n\n// auto | refresh | analyze\n// NOTA: refresh NO fuerza IA; force_refresh sí.\nconst mode = safeStr(setInput.mode || 'auto').toLowerCase();\nconst force_refresh = !!setInput.force_refresh;\nconst source = safeStr(setInput.source || '').toLowerCase();\n\nconst extras_limit = Number(setInput.extras_limit ?? 15) || 15;\n\n// Umbrales híbridos extras\nconst DELTA_CHARS_DEEP = Number(setInput.delta_chars_deep ?? 2000) || 2000;\nconst DELTA_COUNT_DEEP = Number(setInput.delta_count_deep ?? 3) || 3;\n\n// ===============================\n// 2) Lead (Flow 1)\n// ===============================\nconst lead = $node[\"GS_Lead_Lookup\"]?.json ?? {};\n\n// Detectar estado Flow3\nconst lead_flow_state = safeStr(lead.flow_state).toUpperCase();\nconst flow3_closed_flag = (lead_flow_state === 'FLOW3_CLOSED');\n\n// ===============================\n// 3) Raw transcription (puede no existir)\n// ===============================\nconst rawT = $node[\"GS_Transcript_Lookup\"]?.json ?? {};\nconst transcription_raw = safeStr(rawT.transcription_raw);\nconst transcription_clean = safeStr(rawT.transcription_clean);\n\n// Fallback: si no hay transcription, usar voice_concat del Lead\nconst voice_concat = safeStr(lead.voice_concat);\n\n// Elegimos texto principal\nconst transcript_main =\n  transcription_clean ||\n  transcription_raw ||\n  voice_concat;\n\n// ===============================\n// 4) Extras (0..n filas)\n// ===============================\nlet extrasItems = [];\ntry {\n  extrasItems = $node[\"GS_Extras_GetMany\"]?.all()?.map(x => x.json) ?? [];\n} catch (e) {\n  extrasItems = [];\n}\n\nextrasItems = extrasItems\n  .filter(x => safeStr(x.chat_id) === chat_id || chat_id === '')\n  .map(x => ({\n    extra_id: safeStr(x.extra_id),\n    source: safeStr(x.source),\n    from: safeStr(x.from),\n    received_at: safeStr(x.received_at),\n    content_type: safeStr(x.content_type),\n    content: safeStr(x.content),\n    tags: safeStr(x.tags),\n  }));\n\n// Orden desc por received_at (o extra_id)\nextrasItems.sort((a, b) => {\n  const ad = a.received_at || a.extra_id;\n  const bd = b.received_at || b.extra_id;\n  return ad < bd ? 1 : ad > bd ? -1 : 0;\n});\n\nextrasItems = extrasItems.slice(0, extras_limit);\n\n// ===============================\n// 5) Flow2 previo (puede estar vacío)\n// ===============================\nconst flow2prev = $node[\"GS_Flow2Analysis_Lookup\"]?.json ?? {};\nconst prev_context_hash = safeStr(flow2prev.context_hash);\nconst has_previous_analysis = !!prev_context_hash;\n\n// hashes previos por componente (si existen)\nconst prev_hash_lead = safeStr(flow2prev.context_hash_lead);\nconst prev_hash_transcript = safeStr(flow2prev.context_hash_transcript);\nconst prev_hash_extras = safeStr(flow2prev.context_hash_extras);\n\n// métricas previas extras (si las guardas)\nconst prev_extras_count = Number(flow2prev.extras_count ?? 0) || 0;\nconst prev_extras_text_length = Number(flow2prev.extras_text_length ?? 0) || 0;\n\n// último modo / versión previa (si existe)\nconst prev_analysis_version = Number(flow2prev.analysis_version ?? 0) || 0;\n\n// ✅ FIX Flow3 cierre NUEVO (solo 1 vez)\nconst lead_flow3_closed_at = safeStr(lead.flow3_closed_at);\nconst prev_flow3_closed_at_seen = safeStr(flow2prev.flow3_closed_at_seen);\n\nconst is_new_flow3_close =\n  flow3_closed_flag &&\n  !!lead_flow3_closed_at &&\n  (lead_flow3_closed_at !== prev_flow3_closed_at_seen);\n\n// ===============================\n// 6) Context Object (sin campos volátiles)\n// ===============================\nconst context_object = {\n  meta: {\n    chat_id: chat_id || safeStr(lead.chat_id),\n    mode,\n    force_refresh,\n    source,\n    extras_limit,\n    created_at: safeStr(lead.created_at),\n    lang: safeStr(lead.lang || lead.lang_user || 'ES').toUpperCase(),\n  },\n  lead: {\n    // cosmético\n    name: safeStr(lead.q1_name || lead.name),\n    email: safeStr(lead.q2_email || lead.email),\n\n    // relevante\n    company: safeStr(lead.q3_company || lead.company),\n    tools: safeStr(lead.q4_tools || lead.tools),\n    goal: safeStr(lead.q5_goal || lead.goal),\n\n    // resúmenes Flow1\n    client_summary: safeStr(lead.client_summary),\n    tech_summary: safeStr(lead.tech_summary),\n  },\n  transcript: {\n    transcription_clean: trimText(transcription_clean, 6000),\n    transcription_raw: trimText(transcription_raw, 6000),\n    voice_concat: trimText(voice_concat, 6000),\n    transcript_main: trimText(transcript_main, 8000),\n    audio_count: safeStr(rawT.audio_count || lead.voice_count || lead.audio_count),\n    audio_duration_sec: safeStr(rawT.audio_duration_sec),\n    voice_last_at: safeStr(lead.voice_last_at || rawT.created_at),\n  },\n  extras: extrasItems.map(x => ({\n    received_at: x.received_at,\n    source: x.source,\n    content_type: x.content_type,\n    content: trimText(x.content, 1200),\n    tags: x.tags,\n  })),\n  flow2_previous: has_previous_analysis ? {\n    tier: safeStr(flow2prev.tier),\n    score_total: safeStr(flow2prev.score_total),\n    confidence: safeStr(flow2prev.confidence),\n    quote_range: safeStr(flow2prev.quote_range),\n    roadmap: safeStr(flow2prev.roadmap),\n    last_updated_at: safeStr(flow2prev.updated_at),\n    context_hash: prev_context_hash,\n    flow3_closed_at_seen: prev_flow3_closed_at_seen,\n  } : null\n};\n\n// ===============================\n// 7) Texto compacto para IA\n// ===============================\nconst extrasText = context_object.extras.length\n  ? context_object.extras.map((e, idx) =>\n      `- [${idx + 1}] (${e.received_at || 'sin_fecha'} | ${e.source || 'unknown'} | ${e.content_type || 'text'}) ${e.content}`\n    ).join('\\n')\n  : '(Sin extras adicionales)';\n\nconst internalNotesInput = safeStr(setInput.internal_notes);\n\nconst context_summary_for_ai = [\n  `LEAD`,\n  `- chat_id: ${context_object.meta.chat_id}`,\n  `- nombre: ${context_object.lead.name}`,\n  `- email: ${context_object.lead.email}`,\n  `- empresa: ${context_object.lead.company}`,\n  `- herramientas: ${context_object.lead.tools}`,\n  `- objetivo: ${context_object.lead.goal}`,\n  `- idioma: ${context_object.meta.lang}`,\n  `- source: ${context_object.meta.source || '(none)'}`,\n  ``,\n  `FLOW1_SUMMARIES`,\n  `- client_summary: ${trimText(context_object.lead.client_summary, 1200)}`,\n  `- tech_summary: ${trimText(context_object.lead.tech_summary, 1600)}`,\n  ``,\n  `TRANSCRIPT_MAIN`,\n  trimText(context_object.transcript.transcript_main, 2500),\n  ``,\n  `EXTRAS`,\n  extrasText,\n  ``,\n  `LANGUAGE_CONTROL`,\n  `- user_lang: ${context_object.meta.lang}`,\n  `- respond_in: ${context_object.meta.lang}`,\n  ``,\n  `CONSULTANT_NOTES`,\n  internalNotesInput ? `- internal_notes: ${trimText(internalNotesInput, 800)}` : `- internal_notes: (none)`\n].join('\\n');\n\n// ===============================\n// 8) Hashes por componente (sin datos cosméticos)\n// ===============================\nconst leadRelevantPayload = JSON.stringify({\n  lang: context_object.meta.lang,\n  company: context_object.lead.company,\n  tools: context_object.lead.tools,\n  goal: context_object.lead.goal,\n  client_summary: trimText(context_object.lead.client_summary, 1200),\n  tech_summary: trimText(context_object.lead.tech_summary, 1600),\n});\n\nconst transcriptPayload = JSON.stringify({\n  transcript_main: trimText(context_object.transcript.transcript_main, 8000),\n});\n\nconst extrasPayload = JSON.stringify(context_object.extras);\n\nconst context_hash_lead = simpleHash(leadRelevantPayload);\nconst context_hash_transcript = simpleHash(transcriptPayload);\nconst context_hash_extras = simpleHash(extrasPayload);\n\n// Hash global\nconst context_hash = simpleHash(JSON.stringify({\n  chat_id: context_object.meta.chat_id,\n  lead: context_hash_lead,\n  transcript: context_hash_transcript,\n  extras: context_hash_extras\n}));\n\n// ===============================\n// 9) Detectar cambios relevantes\n// ===============================\nconst lead_changed = has_previous_analysis ? (prev_hash_lead ? prev_hash_lead !== context_hash_lead : true) : true;\nconst transcript_changed = has_previous_analysis ? (prev_hash_transcript ? prev_hash_transcript !== context_hash_transcript : true) : true;\nconst extras_changed = has_previous_analysis ? (prev_hash_extras ? prev_hash_extras !== context_hash_extras : true) : true;\n\nconst relevant_changed =\n  !has_previous_analysis ||\n  lead_changed ||\n  transcript_changed ||\n  extras_changed ||\n  (prev_context_hash !== context_hash);\n\n// ===============================\n// 10) Cambios cosméticos (name/email/lang)\n// ===============================\nconst prev_name = safeStr(flow2prev.name);\nconst prev_email = safeStr(flow2prev.email);\nconst prev_lang = safeStr(flow2prev.lang);\n\nconst now_name = safeStr(context_object.lead.name);\nconst now_email = safeStr(context_object.lead.email);\nconst now_lang = safeStr(context_object.meta.lang);\n\nconst cosmetic_changed =\n  has_previous_analysis &&\n  !relevant_changed &&\n  (\n    (prev_name && prev_name !== now_name) ||\n    (prev_email && prev_email !== now_email) ||\n    (prev_lang && prev_lang !== now_lang) ||\n    (!prev_name && now_name) ||\n    (!prev_email && now_email) ||\n    (!prev_lang && now_lang)\n  );\n\n// ===============================\n// 11) should_analyze_ai (bandera)\n// ===============================\nconst should_analyze_ai =\n  force_refresh ||\n  (mode === 'analyze') ||\n  (source === 'flow3_done') ||\n  relevant_changed ||\n  is_new_flow3_close;\n\n// ===============================\n// 12) Decisión híbrida (SKIP / INCREMENTAL / DEEP)\n// ===============================\nlet analysis_mode = 'SKIP';\nconst analysis_reasons = [];\n\n// ✅ Si viene del cierre de Flow3, forzar análisis completo\nif (source === 'flow3_done') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('source_flow3_done');\n}\n\nif (!has_previous_analysis && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('no_previous_analysis');\n}\n\nif (force_refresh && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('force_refresh');\n}\n\nif (mode === 'analyze' && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('mode_analyze');\n}\n\n// ✅ FIX: Solo si el cierre es NUEVO\nif (is_new_flow3_close && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('flow3_closed_new');\n}\n\n// Cambios estructurales => DEEP\nif (lead_changed && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('lead_changed');\n}\nif (transcript_changed && analysis_mode !== 'DEEP') {\n  analysis_mode = 'DEEP';\n  analysis_reasons.push('transcript_changed');\n}\n\n// Extras => incremental/deep según delta\nconst extras_count = context_object.extras.length;\nconst extras_text_length = safeStr(extrasText).length;\n\nconst extras_delta_count = extras_count - prev_extras_count;\nconst extras_delta_chars = extras_text_length - prev_extras_text_length;\n\nconst extras_delta_count_norm = Math.max(0, extras_delta_count);\nconst extras_delta_chars_norm = Math.max(0, extras_delta_chars);\n\nconst only_extras_changed = extras_changed && !lead_changed && !transcript_changed;\n\nif (analysis_mode !== 'DEEP') {\n  if (only_extras_changed) {\n    if (extras_delta_chars_norm > DELTA_CHARS_DEEP || extras_delta_count_norm > DELTA_COUNT_DEEP) {\n      analysis_mode = 'DEEP';\n      analysis_reasons.push('extras_delta_large');\n    } else {\n      analysis_mode = 'INCREMENTAL';\n      analysis_reasons.push('extras_delta_small');\n    }\n  } else if (relevant_changed) {\n    analysis_mode = 'DEEP';\n    analysis_reasons.push('relevant_changed_fallback');\n  } else if (cosmetic_changed) {\n    analysis_mode = 'INCREMENTAL';\n    analysis_reasons.push('cosmetic_changed');\n  }\n}\n\nif (!should_analyze_ai && analysis_mode !== 'INCREMENTAL' && analysis_mode !== 'DEEP') {\n  analysis_mode = 'SKIP';\n  if (!analysis_reasons.length) analysis_reasons.push('no_relevant_changes');\n}\n\n// Versionado simple (sube en cada análisis real)\nconst analysis_version = (analysis_mode === 'SKIP') ? prev_analysis_version : (prev_analysis_version + 1);\n\n// ===============================\n// 13) Perfil/Complejidad (solo para Pricing_Base lookup)\n// ===============================\nlet profile = safeStr(setInput.profile || lead.profile || '').toUpperCase();\nlet complexity = safeStr(setInput.complexity || lead.complexity || '').toUpperCase();\n\nif (!profile) profile = 'MICRO';\nif (!complexity) complexity = 'LOW';\n\n// Si quieres mantener heurística básica (sin precio):\nconst toolsText = (context_object.lead.tools || '').toLowerCase();\nconst goalText = (context_object.lead.goal || '').toLowerCase();\nconst transcriptText = (context_object.transcript.transcript_main || '').toLowerCase();\n\nif (profile === 'MICRO' && (toolsText.includes('crm') || goalText.includes('crm'))) {\n  profile = 'PYME';\n}\nif (complexity === 'LOW' && (transcriptText.includes('automat') || transcriptText.includes('integrac'))) {\n  complexity = 'MEDIUM';\n}\nif (complexity !== 'HIGH' && (\n  transcriptText.includes('centralizada') ||\n  transcriptText.includes('multi') ||\n  transcriptText.includes('erp') ||\n  transcriptText.includes('api')\n)) {\n  complexity = 'HIGH';\n}\n\nconst pricing_key = `${profile}|${complexity}`;\n\n// ===============================\n// 14) OUTPUT (todo lo que usa Flow2)\n// ===============================\nreturn [{\n  chat_id: context_object.meta.chat_id,\n  lang: context_object.meta.lang,\n\n  context_object,\n  context_summary_for_ai,\n\n  // hashes\n  context_hash,\n  context_hash_lead,\n  context_hash_transcript,\n  context_hash_extras,\n\n  // deltas extras\n  extras_count,\n  extras_text_length,\n  extras_delta_count: extras_delta_count_norm,\n  extras_delta_chars: extras_delta_chars_norm,\n\n  // flags / modes\n  has_previous_analysis,\n  relevant_changed,\n  cosmetic_changed,\n  should_analyze_ai,\n  analysis_mode,\n  analysis_reasons,\n  analysis_version,\n\n  // flow3\n  flow3_closed_flag,\n  is_new_flow3_close,\n  flow3_closed_at: lead_flow3_closed_at,\n  flow3_closed_at_seen_next: lead_flow3_closed_at || prev_flow3_closed_at_seen,\n\n  // pricing lookup inputs (SIN calcular dinero aquí)\n  profile,\n  complexity,\n  pricing_key,\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_005",
+      "name": "CODE_Build_Context"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "[SANITIZED_PROMPT_SYSTEM] Prompt removed for public showcase. This node performs structured AI analysis and returns normalized JSON output."
+            },
+            {
+              "content": "[SANITIZED_PROMPT_USER] Prompt removed for public showcase. This node performs structured AI analysis and returns normalized JSON output."
+            }
+          ]
+        },
+        "simplify": false,
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        640,
+        96
+      ],
+      "id": "SANITIZED_NODE_ID_006",
+      "name": "AI_Flow2_Analyzer"
+    },
+    {
+      "parameters": {
+        "jsCode": "// CODE_Normalize_Output (n8n Code node)\n// Objetivo: Normalizar la salida del nodo AI (Responses API) + merge con base del CODE_Build_Context\n// Salida: un item con campos listos para Google Sheets (Update/Append)\n\nfunction safeStr(v) {\n  if (v === null || v === undefined) return '';\n  return String(v);\n}\n\nfunction tryParseJson(text) {\n  try {\n    return JSON.parse(text);\n  } catch (e) {\n    return null;\n  }\n}\n\nfunction joinIfArray(v, sep = ' | ') {\n  if (Array.isArray(v)) return v.map(x => safeStr(x)).filter(Boolean).join(sep);\n  return safeStr(v);\n}\n\n// 1) Base desde CODE_Build_Context (para no perder hashes + lead info)\nconst base = $node[\"CODE_Build_Context\"]?.json ?? {};\nconst ctx = base.context_object ?? {};\nconst lead = ctx.lead ?? {};\nconst meta = ctx.meta ?? {};\n\nconst chat_id = safeStr(base.chat_id || meta.chat_id);\nconst email = safeStr(lead.email || base.email);\nconst name = safeStr(lead.name || base.name);\nconst lang = safeStr(meta.lang || base.lang);\n\n// Hashes (estos deben terminar guardados en Flow2_Analysis)\nconst context_hash = safeStr(base.context_hash);\nconst context_hash_lead = safeStr(base.context_hash_lead);\nconst context_hash_transcript = safeStr(base.context_hash_transcript);\nconst context_hash_extras = safeStr(base.context_hash_extras);\n\n// 2) Respuesta del AI (este node)\nconst r = $json;\n\n// 2.1) Encontrar el texto JSON dentro del response (Responses API)\nlet aiText = '';\ntry {\n  const msg = r.output?.find(x => x.type === 'message');\n  aiText = msg?.content?.find(c => c.type === 'output_text')?.text || '';\n} catch (e) {\n  aiText = '';\n}\n\nconst aiObj = tryParseJson(aiText) || {};\n\n// 3) Normalizar campos AI\nconst tier = safeStr(aiObj.tier);\nconst score_total = Number(aiObj.score_total ?? 0) || 0;\nconst confidence = safeStr(aiObj.confidence);\nconst top_opportunity = safeStr(aiObj.top_opportunity);\n\n// quick_wins: si viene como array de objetos, lo hacemos string compacto; si viene string, lo usamos\nlet quick_wins = '';\nif (Array.isArray(aiObj.quick_wins)) {\n  quick_wins = aiObj.quick_wins.map((x, i) => {\n    const t = safeStr(x.title);\n    const why = safeStr(x.why);\n    const effort = safeStr(x.effort);\n    const impact = safeStr(x.impact);\n    // formato corto y legible en una celda\n    return `${i + 1}) ${t}${effort || impact ? ` (${effort || '-'} / ${impact || '-'})` : ''}${why ? `: ${why}` : ''}`;\n  }).join(' || ');\n} else {\n  quick_wins = safeStr(aiObj.quick_wins);\n}\n\n// roadmap / phases\nlet roadmap = '';\nif (Array.isArray(aiObj.phases)) {\n  roadmap = aiObj.phases.map(p => {\n    const ph = safeStr(p.phase);\n    const goal = safeStr(p.goal);\n    const del = Array.isArray(p.deliverables) ? p.deliverables.join(', ') : safeStr(p.deliverables);\n    return `${ph}: ${goal}${del ? ` -> ${del}` : ''}`;\n  }).join(' || ');\n} else {\n  roadmap = safeStr(aiObj.roadmap);\n}\n\nconst scope_includes = Array.isArray(aiObj.scope_includes) ? aiObj.scope_includes.join(' | ') : safeStr(aiObj.scope_includes);\nconst scope_excludes = Array.isArray(aiObj.scope_excludes) ? aiObj.scope_excludes.join(' | ') : safeStr(aiObj.scope_excludes);\n\n// quote_range (objeto -> string)\nlet quote_range = '';\nif (aiObj.quote_range && typeof aiObj.quote_range === 'object') {\n  const cur = safeStr(aiObj.quote_range.currency || 'USD');\n  const low = safeStr(aiObj.quote_range.low);\n  const high = safeStr(aiObj.quote_range.high);\n  const model = safeStr(aiObj.quote_range.pricing_model);\n  const notes = safeStr(aiObj.quote_range.notes);\n  quote_range = `${cur} ${low} - ${high}${model ? ` (${model})` : ''}${notes ? ` | ${notes}` : ''}`;\n} else {\n  quote_range = safeStr(aiObj.quote_range);\n}\n\nconst blocking_questions = joinIfArray(aiObj.blocking_questions, ' | ');\nconst next_step_recommended = safeStr(aiObj.next_step_recommended);\n\n// internal_notes (puede venir del AI o quedar vacío)\nconst internal_notes = safeStr(aiObj.internal_notes);\n\n// 4) status + timestamps\nconst flow2_status = 'ANALYZED';\nconst updated_at = new Date().toISOString();\n\n// 5) Salida final para GS\nreturn [{\n  json: {\n    // Identidad\n    chat_id,\n    email,\n    name,\n    lang,\n\n    // Estado\n    flow2_status,\n    updated_at,\n\n    // Hashes (claves para optimización)\n    context_hash,\n    context_hash_lead,\n    context_hash_transcript,\n    context_hash_extras,\n\n    // Resultado AI\n    tier,\n    score_total,\n    confidence,\n    top_opportunity,\n    quick_wins,\n    roadmap,\n    scope_includes,\n    scope_excludes,\n    quote_range,\n    blocking_questions,\n    next_step_recommended,\n    internal_notes,\n\n    // Debug opcional (si quieres ver qué devolvió el AI tal cual)\n    // ai_raw_text: aiText\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        96
+      ],
+      "id": "SANITIZED_NODE_ID_007",
+      "name": "CODE_Normalize_Output"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6GOOGLE_SHEET_ID_PLACEHOLDER",
+              "leftValue": "={{ Number($node[\"GS_Flow2Analysis_Lookup\"].json.row_number || 0) > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1744,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_008",
+      "name": "IF_Flow2_Row_Exists"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Analysis",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $('CODE_Normalize_Output').item.json.chat_id }}",
+            "context_hash": "={{ $node[\"CODE_Build_Context\"].json.context_hash }}",
+            "tier": "={{ $('CODE_Normalize_Output').item.json.tier }}",
+            "score_total": "={{ $('CODE_Normalize_Output').item.json.score_total }}",
+            "confidence": "={{ $('CODE_Normalize_Output').item.json.confidence }}",
+            "top_opportunity": "={{ $('CODE_Normalize_Output').item.json.top_opportunity }}",
+            "quick_wins": "={{ $('CODE_Normalize_Output').item.json.quick_wins }}",
+            "roadmap": "={{ $('CODE_Normalize_Output').item.json.roadmap }}",
+            "scope_includes": "={{ $('CODE_Normalize_Output').item.json.scope_includes }}",
+            "scope_excludes": "={{ $('CODE_Normalize_Output').item.json.scope_excludes }}}",
+            "quote_range": "={{ $('CODE_Normalize_Output').item.json.quote_range }}",
+            "blocking_questions": "={{ $('CODE_Normalize_Output').item.json.blocking_questions }}",
+            "next_step_recommended": "={{ $('CODE_Normalize_Output').item.json.next_step_recommended }}",
+            "internal_notes": "={{ $('CODE_Normalize_Output').item.json.internal_notes }}",
+            "context_hash_lead": "={{ $node[\"CODE_Build_Context\"].json.context_hash_lead }}",
+            "context_hash_transcript": "={{ $node[\"CODE_Build_Context\"].json.context_hash_transcript }}",
+            "context_hash_extras": "={{ $node[\"CODE_Build_Context\"].json.context_hash_extras }}",
+            "analysis_mode": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+            "analysis_version": "={{ $node[\"CODE_Build_Context\"].json.analysis_version }}",
+            "extras_count": "={{ $node[\"CODE_Build_Context\"].json.extras_count }}",
+            "extras_text_length": "={{ $node[\"CODE_Build_Context\"].json.extras_text_length }}",
+            "analysis_reasons": "={{ JSON.stringify($node[\"CODE_Build_Context\"].json.analysis_reasons || []) }}",
+            "flow2_status": "={{ $('CODE_Normalize_Output').item.json.flow2_status }}",
+            "updated_at": "={{ $('CODE_Normalize_Output').item.json.updated_at }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow2_status",
+              "displayName": "flow2_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash",
+              "displayName": "context_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_total",
+              "displayName": "score_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "top_opportunity",
+              "displayName": "top_opportunity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quick_wins",
+              "displayName": "quick_wins",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "roadmap",
+              "displayName": "roadmap",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_includes",
+              "displayName": "scope_includes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_excludes",
+              "displayName": "scope_excludes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quote_range",
+              "displayName": "quote_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "blocking_questions",
+              "displayName": "blocking_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "next_step_recommended",
+              "displayName": "next_step_recommended",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "internal_notes",
+              "displayName": "internal_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "context_hash_lead",
+              "displayName": "context_hash_lead",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_transcript",
+              "displayName": "context_hash_transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_extras",
+              "displayName": "context_hash_extras",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_mode",
+              "displayName": "analysis_mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_version",
+              "displayName": "analysis_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "extras_count",
+              "displayName": "extras_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "extras_text_length",
+              "displayName": "extras_text_length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_reasons",
+              "displayName": "analysis_reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "report_object_json",
+              "displayName": "report_object_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1952,
+        0
+      ],
+      "id": "SANITIZED_NODE_ID_009",
+      "name": "GS_Flow2_Update"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Analysis",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $('CODE_Build_Context').item.json.context_object.meta.chat_id }}",
+            "email": "={{ $('CODE_Build_Context').item.json.context_object.lead.email }}",
+            "name": "={{ $('CODE_Build_Context').item.json.context_object.lead.name }}",
+            "lang": "={{ $('CODE_Build_Context').item.json.context_object.meta.lang }}",
+            "flow2_status": "NO_CHANGE",
+            "updated_at": "{{ $now.toISO() }}",
+            "context_hash_lead": "={{ $('CODE_Build_Context').item.json.context_hash_lead }}",
+            "context_hash_transcript": "={{ $('CODE_Build_Context').item.json.context_hash_transcript }}",
+            "context_hash_extras": "={{ $('CODE_Build_Context').item.json.context_hash_extras }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow2_status",
+              "displayName": "flow2_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "context_hash",
+              "displayName": "context_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "score_total",
+              "displayName": "score_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "top_opportunity",
+              "displayName": "top_opportunity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "quick_wins",
+              "displayName": "quick_wins",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "roadmap",
+              "displayName": "roadmap",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scope_includes",
+              "displayName": "scope_includes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scope_excludes",
+              "displayName": "scope_excludes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "quote_range",
+              "displayName": "quote_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "blocking_questions",
+              "displayName": "blocking_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "next_step_recommended",
+              "displayName": "next_step_recommended",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "internal_notes",
+              "displayName": "internal_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "context_hash_lead",
+              "displayName": "context_hash_lead",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_transcript",
+              "displayName": "context_hash_transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_extras",
+              "displayName": "context_hash_extras",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        640,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_010",
+      "name": "GS_Flow2_Update_Basic",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8a6c04eGOOGLE_SHEET_ID_PLACEHOLDER",
+              "leftValue": "={{ $json.cosmetic_changed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        288,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_011",
+      "name": "IF_CosmeticChanged"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "flow2-auto-trigger",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1728,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_012",
+      "name": "TRG_Flow2_Webhook",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "09aGOOGLE_SHEET_ID_PLACEHOLDER",
+              "name": "chat_id",
+              "value": "={{ $json.body.chat_id }}",
+              "type": "string"
+            },
+            {
+              "id": "f736cf60-00e0-4d69-8aa1-ef5f119ca57f",
+              "name": "mode",
+              "value": "={{ $json.mode || 'auto' }}",
+              "type": "string"
+            },
+            {
+              "id": "7c6ffGOOGLE_SHEET_ID_PLACEHOLDER",
+              "name": "extras_limit",
+              "value": 15,
+              "type": "number"
+            },
+            {
+              "id": "GOOGLE_SHEET_ID_PLACEHOLDER",
+              "name": "send_internal_email",
+              "value": "={{$json.send_internal_email || false}}",
+              "type": "boolean"
+            },
+            {
+              "id": "e2GOOGLE_SHEET_ID_PLACEHOLDER",
+              "name": "force_refresh",
+              "value": "={{$json.force_refresh || false}}",
+              "type": "boolean"
+            },
+            {
+              "id": "7eGOOGLE_SHEET_ID_PLACEHOLDER",
+              "name": "internal_notes",
+              "value": "={{$json.internal_notes || ''}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1552,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_013",
+      "name": "SET_Input"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e9f2f5dc-df6b-4c8c-8660-b48b203bacf2",
+              "leftValue": "={{ ($node[\"CODE_Normalize_Output\"].json.blocking_questions || \"\").trim() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1152,
+        96
+      ],
+      "id": "SANITIZED_NODE_ID_014",
+      "name": "IF_BlockingQuestions_Exist"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $json.chat_id }}",
+            "flow_state": "={{ $json.flow_state }}",
+            "flow3_request_id": "={{ $json.flow3_request_id }}",
+            "flow3_questions": "={{ $json.flow3_questions }}",
+            "flow3_opened_at": "={{ $json.flow3_opened_at }}",
+            "flow3_last_message_at": "={{ $json.flow3_last_message_at }}",
+            "flow3_expires_at": "={{ $json.flow3_expires_at }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_user_id",
+              "displayName": "telegram_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_question",
+              "displayName": "last_question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q1_name",
+              "displayName": "q1_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q2_email",
+              "displayName": "q2_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q3_company",
+              "displayName": "q3_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q4_tools",
+              "displayName": "q4_tools",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q5_goal",
+              "displayName": "q5_goal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_concat",
+              "displayName": "voice_concat",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_count",
+              "displayName": "voice_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_last_at",
+              "displayName": "voice_last_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "ai_summary",
+              "displayName": "ai_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "full_profile",
+              "displayName": "full_profile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "client_summary",
+              "displayName": "client_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tech_summary",
+              "displayName": "tech_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow_state",
+              "displayName": "flow_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_request_id",
+              "displayName": "flow3_request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_questions",
+              "displayName": "flow3_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_opened_at",
+              "displayName": "flow3_opened_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_closed_at",
+              "displayName": "flow3_closed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_last_message_at",
+              "displayName": "flow3_last_message_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_expires_at",
+              "displayName": "flow3_expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1552,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_015",
+      "name": "GS_Leads_Update_OpenFlow3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const chat_id = $node[\"SET_Input\"].json.chat_id;\n\nconst now = new Date();\nconst hours = 24; // <-- cambia aquí\nconst expires = new Date(now.getTime() + hours * 60 * 60 * 1000);\n\nconst iso = now.toISOString().replace(/[-:]/g,'').replace('.','').replace('Z','');\nconst rnd = Math.random().toString(36).slice(2, 8);\n\nreturn [{\n  chat_id,\n  flow_state: \"FLOW3_WAITING\",\n  flow3_request_id: `F3-${chat_id}-${iso}-${rnd}`,\n  flow3_opened_at: now.toISOString(),\n  flow3_expires_at: expires.toISOString(),\n  flow3_questions: (($node[\"CODE_Normalize_Output\"].json.blocking_questions || \"\") + \"\").trim(),\n  flow3_last_message_at: now.toISOString(),\n  flow3_window_hours: hours,\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_016",
+      "name": "CODE_Flow3_BuildWindowPayload"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b7fbb67e-4ccf-4f26-9b7c-94e6bc9c82be",
+              "leftValue": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+              "rightValue": "DEEP",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        288,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_017",
+      "name": "IF_Mode_DEEP"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b7fbb67e-4ccf-4f26-9b7c-94e6bc9c82be",
+              "leftValue": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+              "rightValue": "INCREMENTAL",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        464,
+        288
+      ],
+      "id": "SANITIZED_NODE_ID_018",
+      "name": "IF_Mode_INCREMENTAL"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b7fbb67e-4ccf-4f26-9b7c-94e6bc9c82be",
+              "leftValue": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+              "rightValue": "SKIP",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        96,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_019",
+      "name": "IF_Mode_SKIP"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "[SANITIZED_PROMPT_SYSTEM] Prompt removed for public showcase. This node performs structured AI analysis and returns normalized JSON output."
+            },
+            {
+              "content": "[SANITIZED_PROMPT_USER] Prompt removed for public showcase. This node performs structured AI analysis and returns normalized JSON output."
+            }
+          ]
+        },
+        "simplify": false,
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        2384,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_020",
+      "name": "AI_Report_Builder_DEEP"
+    },
+    {
+      "parameters": {
+        "jsCode": "// CODE_Normalize_Report (n8n Code node)\n// Objetivo: Normalizar la salida del AI_Report_Builder_DEEP y producir SIEMPRE report_object_json\n// para guardarlo en Google Sheets sin romper el flujo.\n\nfunction safeStr(v) {\n  if (v === null || v === undefined) return '';\n  return String(v);\n}\n\nfunction extractAiTextFromNode(nodeName) {\n  const n = $node[nodeName];\n  if (!n) return '';\n  const r = n.json || {};\n\n  // Responses API típico\n  try {\n    const msg = r.output?.find(x => x.type === 'message');\n    const t = msg?.content?.find(c => c.type === 'output_text')?.text;\n    if (t) return t;\n  } catch (e) {}\n\n  // Variantes comunes\n  if (r.output_text) return safeStr(r.output_text);\n  if (r.choices?.[0]?.message?.content) return safeStr(r.choices[0].message.content);\n\n  return safeStr(r.text || r.response || r.output || r.content || '');\n}\n\nfunction tryParseJson(text) {\n  const t = safeStr(text).trim();\n  if (!t) return null;\n\n  // soporta ```json ... ```\n  const fenced = t.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/i);\n  const candidate = fenced ? fenced[1].trim() : t;\n\n  try {\n    return JSON.parse(candidate);\n  } catch (e) {\n    return null;\n  }\n}\n\n// Identidad\nconst chat_id =\n  safeStr($node[\"CODE_Build_Context\"]?.json?.chat_id) ||\n  safeStr($node[\"CODE_Normalize_Output\"]?.json?.chat_id) ||\n  safeStr($node[\"GS_Lead_Lookup\"]?.json?.chat_id);\n\n// 1) Tomar texto del report builder\nconst rawText = extractAiTextFromNode(\"AI_Report_Builder_DEEP\");\n\n// 2) Intentar parsear JSON\nconst parsed = tryParseJson(rawText);\n\n// 3) Construir SIEMPRE un string para Sheets\nlet report_object_json = '';\nlet report_parse_ok = false;\n\nif (parsed) {\n  report_object_json = JSON.stringify(parsed);\n  report_parse_ok = true;\n} else {\n  // fallback: guardar texto crudo (recortado por seguridad)\n  report_object_json = safeStr(rawText).slice(0, 45000);\n  report_parse_ok = false;\n}\n\nreturn [{\n  json: {\n    chat_id,\n    report_object_json,\n    report_parse_ok,\n    report_raw_len: safeStr(rawText).length\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2672,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_021",
+      "name": "CODE_Normalize_Report"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Analysis",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $('CODE_Normalize_Output').item.json.chat_id }}",
+            "email": "={{ $('CODE_Normalize_Output').item.json.email }}",
+            "name": "={{ $('CODE_Normalize_Output').item.json.name }}",
+            "lang": "={{ $('CODE_Normalize_Output').item.json.lang }}",
+            "flow2_status": "={{ $('CODE_Normalize_Output').item.json.flow2_status }}",
+            "updated_at": "={{ $('CODE_Normalize_Output').item.json.updated_at }}",
+            "context_hash": "={{ $('CODE_Normalize_Output').item.json.context_hash }}",
+            "tier": "={{ $('CODE_Normalize_Output').item.json.tier }}",
+            "score_total": "={{ $('CODE_Normalize_Output').item.json.score_total }}",
+            "confidence": "={{ $('CODE_Normalize_Output').item.json.confidence }}",
+            "top_opportunity": "={{ $('CODE_Normalize_Output').item.json.top_opportunity }}",
+            "quick_wins": "={{ $('CODE_Normalize_Output').item.json.quick_wins }}",
+            "roadmap": "={{ $('CODE_Normalize_Output').item.json.roadmap }}",
+            "scope_includes": "={{ $('CODE_Normalize_Output').item.json.scope_includes }}",
+            "scope_excludes": "={{ $('CODE_Normalize_Output').item.json.scope_includes }}",
+            "quote_range": "={{ $('CODE_Normalize_Output').item.json.quote_range }}",
+            "blocking_questions": "={{ $('CODE_Normalize_Output').item.json.blocking_questions }}",
+            "report_object_json": "={{ $node[\"CODE_Normalize_Report\"].json.report_object_json }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow2_status",
+              "displayName": "flow2_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "context_hash",
+              "displayName": "context_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_total",
+              "displayName": "score_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "top_opportunity",
+              "displayName": "top_opportunity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quick_wins",
+              "displayName": "quick_wins",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "roadmap",
+              "displayName": "roadmap",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_includes",
+              "displayName": "scope_includes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_excludes",
+              "displayName": "scope_excludes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quote_range",
+              "displayName": "quote_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "blocking_questions",
+              "displayName": "blocking_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "next_step_recommended",
+              "displayName": "next_step_recommended",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "internal_notes",
+              "displayName": "internal_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "context_hash_lead",
+              "displayName": "context_hash_lead",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "context_hash_transcript",
+              "displayName": "context_hash_transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "context_hash_extras",
+              "displayName": "context_hash_extras",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "analysis_mode",
+              "displayName": "analysis_mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "analysis_version",
+              "displayName": "analysis_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "extras_count",
+              "displayName": "extras_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "extras_text_length",
+              "displayName": "extras_text_length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "analysis_reasons",
+              "displayName": "analysis_reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "report_object_json",
+              "displayName": "report_object_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "quote_low_final",
+              "displayName": "quote_low_final",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "quote_high_final",
+              "displayName": "quote_high_final",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "final_multiplier",
+              "displayName": "final_multiplier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "pricing_notes",
+              "displayName": "pricing_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "pricing_key",
+              "displayName": "pricing_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_version",
+              "displayName": "analysis_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "context_hash",
+              "displayName": "context_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3312,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_022",
+      "name": "GS_Flow2_Update1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "68373fe9-78ef-4e2f-9ff9-119a2ea614c2",
+              "leftValue": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+              "rightValue": "=DEEP",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2176,
+        128
+      ],
+      "id": "SANITIZED_NODE_ID_023",
+      "name": "IF_RunReportBuilder"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Analysis",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"CODE_Normalize_Output\"].json.chat_id }}",
+            "email": "={{ $node[\"CODE_Normalize_Output\"].json.email }}",
+            "name": "={{ $node[\"CODE_Normalize_Output\"].json.name }}",
+            "lang": "={{ $node[\"CODE_Normalize_Output\"].json.lang }}",
+            "flow2_status": "={{ $node[\"CODE_Normalize_Output\"].json.flow2_status }}",
+            "updated_at": "={{ $node[\"CODE_Normalize_Output\"].json.updated_at }}",
+            "context_hash": "={{ $node[\"CODE_Build_Context\"].json.context_hash }}",
+            "tier": "={{ $node[\"CODE_Normalize_Output\"].json.tier }}",
+            "score_total": "={{ $node[\"CODE_Normalize_Output\"].json.score_total }}",
+            "confidence": "={{ $node[\"CODE_Normalize_Output\"].json.confidence }}",
+            "top_opportunity": "={{ $node[\"CODE_Normalize_Output\"].json.top_opportunity }}",
+            "quick_wins": "={{ $node[\"CODE_Normalize_Output\"].json.quick_wins }}",
+            "roadmap": "={{ $node[\"CODE_Normalize_Output\"].json.roadmap }}",
+            "scope_includes": "={{ $node[\"CODE_Normalize_Output\"].json.scope_includes }}",
+            "scope_excludes": "={{ $node[\"CODE_Normalize_Output\"].json.scope_excludes }}",
+            "quote_range": "={{ $node[\"CODE_Normalize_Output\"].json.quote_range }}",
+            "blocking_questions": "={{ $node[\"CODE_Normalize_Output\"].json.blocking_questions }}",
+            "next_step_recommended": "={{ $node[\"CODE_Normalize_Output\"].json.next_step_recommended }}",
+            "internal_notes": "={{ $node[\"CODE_Normalize_Output\"].json.internal_notes }}",
+            "context_hash_lead": "={{ $node[\"CODE_Build_Context\"].json.context_hash_lead }}",
+            "context_hash_transcript": "={{ $node[\"CODE_Build_Context\"].json.context_hash_transcript }}",
+            "context_hash_extras": "={{ $node[\"CODE_Build_Context\"].json.context_hash_extras }}",
+            "analysis_mode": "={{ $node[\"CODE_Build_Context\"].json.analysis_mode }}",
+            "analysis_version": "={{ $node[\"CODE_Build_Context\"].json.analysis_version }}",
+            "extras_count": "={{$node[\"CODE_Build_Context\"].json.extras_count}}",
+            "extras_text_length": "={{$node[\"CODE_Build_Context\"].json.extras_text_length}}",
+            "analysis_reasons": "={{ JSON.stringify($node[\"CODE_Build_Context\"].json.analysis_reasons || []) }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow2_status",
+              "displayName": "flow2_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "context_hash",
+              "displayName": "context_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_total",
+              "displayName": "score_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "top_opportunity",
+              "displayName": "top_opportunity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quick_wins",
+              "displayName": "quick_wins",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "roadmap",
+              "displayName": "roadmap",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_includes",
+              "displayName": "scope_includes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scope_excludes",
+              "displayName": "scope_excludes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "quote_range",
+              "displayName": "quote_range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "blocking_questions",
+              "displayName": "blocking_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "next_step_recommended",
+              "displayName": "next_step_recommended",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "internal_notes",
+              "displayName": "internal_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "context_hash_lead",
+              "displayName": "context_hash_lead",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_transcript",
+              "displayName": "context_hash_transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context_hash_extras",
+              "displayName": "context_hash_extras",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_mode",
+              "displayName": "analysis_mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_version",
+              "displayName": "analysis_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "extras_count",
+              "displayName": "extras_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "extras_text_length",
+              "displayName": "extras_text_length",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "analysis_reasons",
+              "displayName": "analysis_reasons",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "report_object_json",
+              "displayName": "report_object_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1952,
+        272
+      ],
+      "id": "SANITIZED_NODE_ID_024",
+      "name": "GS_Flow2_Append"
+    },
+    {
+      "parameters": {
+        "jsCode": "// CODE_Build_HTML_Report (versión segura - inline CSS, sin gradient)\n// Entrada: CODE_Normalize_Report.json\n// Salida: { subject, html_report }\n\nfunction safeStr(v) {\n  if (v === null || v === undefined) return '';\n  return String(v);\n}\n\nfunction esc(s) {\n  return safeStr(s)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#039;');\n}\n\nfunction tryParseJson(text) {\n  try { return JSON.parse(text); } catch (e) { return null; }\n}\n\nfunction asArray(v) {\n  if (Array.isArray(v)) return v;\n  if (typeof v === 'string') {\n    try {\n      const j = JSON.parse(v);\n      return Array.isArray(j) ? j : [];\n    } catch (e) {\n      return [];\n    }\n  }\n  return [];\n}\n\nfunction pill(text) {\n  if (!text) return '';\n  return '<span style=\"display:inline-block;font-size:12px;padding:6px 10px;border-radius:999px;background:#f3f4f6;color:#111827;margin-right:6px;\">' +\n    esc(text) + '</span>';\n}\n\nfunction renderList(items) {\n  if (!items || !items.length) return '<div style=\"color:#6b7280;\">—</div>';\n  return '<ul style=\"margin:6px 0 0 18px;padding:0;\">' +\n    items.map(x => '<li style=\"margin:4px 0;\">' + esc(x) + '</li>').join('') +\n    '</ul>';\n}\n\nfunction toNum(v, fallback = null) {\n  const n = Number(v);\n  return Number.isFinite(n) ? n : fallback;\n}\n\nfunction formatInt(n) {\n  const num = toNum(n, null);\n  if (num === null) return '';\n  try {\n    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(num);\n  } catch (e) {\n    return String(Math.round(num));\n  }\n}\n\nfunction formatMoneyRange(currency, low, high) {\n  const c = safeStr(currency || 'USD').trim() || 'USD';\n  const lo = toNum(low, null);\n  const hi = toNum(high, null);\n  if (lo === null || hi === null) return '';\n  return `${c} ${formatInt(lo)} \\u2013 ${formatInt(hi)}`; // en dash\n}\n\nfunction asBool(v, fallback = false) {\n  if (v === true) return true;\n  if (v === false) return false;\n  if (v === null || v === undefined || v === '') return fallback;\n  const s = String(v).toLowerCase().trim();\n  if (['true','1','yes','y','si','sí','on'].includes(s)) return true;\n  if (['false','0','no','n','off'].includes(s)) return false;\n  return fallback;\n}\n\n// 1) Base normalizada\nconst norm = $node[\"CODE_Normalize_Report\"]?.json ?? {};\n\n// Fuente extra (para empresa/actividad)\nconst ctx = $node[\"CODE_Build_Context\"]?.json?.context_object ?? {};\nconst leadCtx = ctx.lead ?? {};\nconst metaCtx = ctx.meta ?? {};\n\nconst chat_id = safeStr(norm.chat_id);\nconst name = safeStr(norm.name);\nconst email = safeStr(norm.email);\nconst lang = safeStr(norm.lang || metaCtx.lang || 'ES');\n\n// fallback a ahora si viene vacío\nconst updated_at = safeStr(norm.updated_at) || new Date().toISOString();\n\nconst analysis_mode = safeStr(norm.analysis_mode);\nconst analysis_version = safeStr(norm.analysis_version);\nconst extras_count = safeStr(norm.extras_count);\nconst extras_text_length = safeStr(norm.extras_text_length);\nconst analysis_reasons = asArray(norm.analysis_reasons);\n\n// Empresa/actividad\nconst company = safeStr(leadCtx.company || '');\n\n// Nombre display para título\nconst displayName = safeStr(company || name || 'Cliente');\n\n// Contacto/Email\nconst contactDisplay = safeStr(name || leadCtx.name || '—');\nconst emailDisplay = safeStr(email || leadCtx.email || '—');\n\n// ===============================\n// VISIBILIDAD: interno vs cliente\n// ===============================\nconst setInput = $node[\"SET_Input\"]?.json ?? {};\nconst isInternalReport = asBool(setInput.is_internal_report, true);\n\n// 2) Report object (JSON grande)\nconst report_raw = safeStr(norm.report_object_json);\nconst report = tryParseJson(report_raw) || {};\n\nconst tier = safeStr(report.tier || norm.tier);\nconst score_total = safeStr((report.score_total !== undefined) ? report.score_total : norm.score_total);\nconst confidence = safeStr(report.confidence || norm.confidence);\nconst top_opportunity = safeStr(report.top_opportunity || norm.top_opportunity);\n\nconst quick_wins = Array.isArray(report.quick_wins) ? report.quick_wins : [];\nconst phases = Array.isArray(report.phases) ? report.phases : [];\nconst scope_includes = Array.isArray(report.scope_includes) ? report.scope_includes : [];\nconst scope_excludes = Array.isArray(report.scope_excludes) ? report.scope_excludes : [];\nconst risks = Array.isArray(report.risks) ? report.risks : [];\nconst blocking_questions = Array.isArray(report.blocking_questions) ? report.blocking_questions : [];\n\nconst next_step = safeStr(report.next_step_recommended || norm.next_step_recommended);\nconst internal_notes = safeStr(report.internal_notes || norm.internal_notes);\n\n// ===============================\n// PRICING: usar CODE_Pricing_Compute (determinista)\n// ===============================\nconst pricing = $node[\"CODE_Pricing_Compute\"]?.json ?? {};\nconst p_low = toNum(pricing.quote_low_final, null);\nconst p_high = toNum(pricing.quote_high_final, null);\nconst p_mult = toNum(pricing.final_multiplier, null);\nconst p_notes = safeStr(pricing.pricing_notes);\n\nconst currency = safeStr(report.quote_range?.currency || norm.currency || 'USD');\n\n// quote_range legacy (fallback)\nlet quote_txt = safeStr(norm.quote_range);\nif (!quote_txt && report.quote_range && typeof report.quote_range === 'object') {\n  const q = report.quote_range;\n  quote_txt = safeStr(q.currency || 'USD') + ' ' + safeStr(q.low) + ' - ' + safeStr(q.high) +\n    (q.pricing_model ? ' (' + safeStr(q.pricing_model) + ')' : '');\n}\n\n// Construir quote final\nlet quote_txt_final = '';\nif (p_low !== null && p_high !== null) {\n  quote_txt_final = formatMoneyRange(currency, p_low, p_high); // ✅ 800 – 2,000\n} else {\n  quote_txt_final = quote_txt || '—';\n}\n\n// ✅ Subline pública (sin multiplicador)\nlet pricing_subline_public = '';\nif (p_low !== null && p_high !== null) {\n  pricing_subline_public =\n    '<div style=\"margin-top:6px;color:#6b7280;font-size:12px;\">' +\n      'Modelo: <b>Evaluación técnica por fases</b>' +\n    '</div>';\n}\n\n// ✅ Notas internas de pricing SOLO internas (incluye multiplicador)\nlet pricing_notes_internal = '';\nif (isInternalReport && (p_notes || p_mult !== null)) {\n  const multTxt = (p_mult !== null) ? `x${p_mult}` : '';\n  pricing_notes_internal =\n    '<div style=\"margin-top:10px;border-top:1px dashed #e5e7eb;padding-top:10px;\">' +\n      '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Notas internas de pricing</div>' +\n      '<div style=\"margin-top:6px;color:#374151;font-size:12px;line-height:1.45;\">' +\n        (multTxt ? ('<b>Multiplicador:</b> ' + esc(multTxt) + (p_notes ? ' · ' : '')) : '') +\n        (p_notes ? esc(p_notes) : '') +\n      '</div>' +\n    '</div>';\n}\n\n// 3) Badges\nconst badges = [\n  pill('Tier ' + (tier || '—')),\n  pill('Puntaje ' + (score_total || '—')),\n  pill('Confianza ' + (confidence || '—'))\n].join('');\n\nconst quickWinsHtml = quick_wins.length ? (\n  '<ol style=\"margin:8px 0 0 18px;padding:0;\">' +\n    quick_wins.map((q, i) => {\n      const t = safeStr(q.title);\n      const why = safeStr(q.why);\n      const effort = safeStr(q.effort);\n      const impact = safeStr(q.impact);\n      return (\n        '<li style=\"margin:10px 0;\">' +\n          '<div style=\"font-weight:700;color:#111827;\">' + esc((i+1) + '. ' + t) + '</div>' +\n          '<div style=\"margin-top:4px;color:#4b5563;font-size:13px;line-height:1.35;\">' +\n            (effort ? pill('Esfuerzo: ' + effort) : '') +\n            (impact ? pill('Impacto: ' + impact) : '') +\n            (why ? '<div style=\"margin-top:6px;color:#4b5563;\">' + esc(why) + '</div>' : '') +\n          '</div>' +\n        '</li>'\n      );\n    }).join('') +\n  '</ol>'\n) : '<div style=\"color:#6b7280;\">—</div>';\n\nconst phasesHtml = phases.length ? (\n  phases.map(p => {\n    const ph = safeStr(p.phase);\n    const goal = safeStr(p.goal);\n    const deliverables = Array.isArray(p.deliverables) ? p.deliverables : [];\n    const assumptions = Array.isArray(p.assumptions) ? p.assumptions : [];\n    return (\n      '<div style=\"border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-top:10px;background:#ffffff;\">' +\n        '<div style=\"font-weight:800;color:#111827;font-size:14px;\">' + esc(ph || 'Fase') + '</div>' +\n        '<div style=\"margin-top:4px;color:#4b5563;font-size:13px;line-height:1.35;\">' + esc(goal) + '</div>' +\n        '<div style=\"margin-top:10px;\">' +\n          '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Entregables</div>' +\n          renderList(deliverables) +\n        '</div>' +\n        '<div style=\"margin-top:10px;\">' +\n          '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Supuestos</div>' +\n          renderList(assumptions) +\n        '</div>' +\n      '</div>'\n    );\n  }).join('')\n) : '<div style=\"color:#6b7280;\">—</div>';\n\n// Subject\nconst subject =\n  'Reporte técnico interno | ' +\n  (tier ? ('Tier ' + tier + ' | ') : '') +\n  displayName +\n  ' | chat_id ' + chat_id;\n\nconst html_report =\n  '<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"background:#f6f7fb;padding:24px 0;font-family:Arial,Helvetica,sans-serif;\">' +\n    '<tr><td align=\"center\">' +\n      '<table role=\"presentation\" width=\"760\" cellspacing=\"0\" cellpadding=\"0\" style=\"max-width:760px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;\">' +\n\n        // HEADER\n        '<tr><td style=\"padding:18px 22px;background:#111827;color:#ffffff;\">' +\n          '<div style=\"font-size:18px;font-weight:800;\">Reporte técnico interno — ' + esc(displayName) + '</div>' +\n          (company ? ('<div style=\"margin-top:4px;font-size:12px;color:#cbd5e1;\">Actividad/Empresa: <b style=\"color:#ffffff;\">' + esc(company) + '</b></div>') : '') +\n          '<div style=\"margin-top:8px;font-size:12px;color:#d1d5db;line-height:1.4;\">' +\n            'Contacto: <b style=\"color:#ffffff;\">' + esc(contactDisplay) + '</b> · ' +\n            'Email: <b style=\"color:#ffffff;\">' + esc(emailDisplay) + '</b> · ' +\n            'Idioma: <b style=\"color:#ffffff;\">' + esc(lang || '—') + '</b><br/>' +\n            'chat_id: <b style=\"color:#ffffff;\">' + esc(chat_id) + '</b> · ' +\n            'Actualizado: <b style=\"color:#ffffff;\">' + esc(updated_at) + '</b>' +\n          '</div>' +\n          '<div style=\"margin-top:10px;\">' + badges + '</div>' +\n        '</td></tr>' +\n\n        // BODY\n        '<tr><td style=\"padding:18px 22px;\">' +\n\n          '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#fbfbfd;\">' +\n            '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Resumen ejecutivo</div>' +\n            '<div style=\"margin-top:10px;\">' +\n              '<div style=\"font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;\">Oportunidad principal</div>' +\n              '<div style=\"margin-top:6px;color:#111827;font-size:14px;line-height:1.45;\">' + esc(top_opportunity || '—') + '</div>' +\n            '</div>' +\n            '<div style=\"margin-top:12px;\">' +\n              // ✅ micro-mejora: inversión estimada\n              '<div style=\"font-size:12px;font-weight:800;color:#6b7280;text-transform:uppercase;\">Inversión estimada</div>' +\n              '<div style=\"margin-top:6px;color:#111827;font-size:14px;line-height:1.45;\">' + esc(quote_txt_final || '—') + '</div>' +\n              (pricing_subline_public || '') +\n              (pricing_notes_internal || '') +\n              '<div style=\"margin-top:6px;color:#6b7280;font-size:12px;\">' +\n                'Versión: <b>' + esc(analysis_version || '—') + '</b> · ' +\n                'Extras: <b>' + esc(extras_count || '0') + '</b> · ' +\n                'Longitud extras: <b>' + esc(extras_text_length || '0') + '</b>' +\n              '</div>' +\n            '</div>' +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;\">' +\n            '<div style=\"font-size:15px;font-weight:900;color:#111827;\">Acciones rápidas (prioridad inmediata)</div>' +\n            '<div style=\"margin-top:8px;border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n              quickWinsHtml +\n            '</div>' +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;\">' +\n            '<div style=\"font-size:15px;font-weight:900;color:#111827;\">Roadmap por fases</div>' +\n            phasesHtml +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;\">' +\n            '<div style=\"font-size:15px;font-weight:900;color:#111827;\">Alcance</div>' +\n            '<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:8px;\">' +\n              '<tr>' +\n                '<td width=\"50%\" style=\"padding-right:6px;vertical-align:top;\">' +\n                  '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n                    '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Incluye</div>' +\n                    renderList(scope_includes) +\n                  '</div>' +\n                '</td>' +\n                '<td width=\"50%\" style=\"padding-left:6px;vertical-align:top;\">' +\n                  '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n                    '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Excluye</div>' +\n                    renderList(scope_excludes) +\n                  '</div>' +\n                '</td>' +\n              '</tr>' +\n            '</table>' +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;\">' +\n            '<div style=\"font-size:15px;font-weight:900;color:#111827;\">Riesgos y preguntas bloqueantes</div>' +\n            '<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:8px;\">' +\n              '<tr>' +\n                '<td width=\"50%\" style=\"padding-right:6px;vertical-align:top;\">' +\n                  '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n                    '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Riesgos</div>' +\n                    renderList(risks) +\n                  '</div>' +\n                '</td>' +\n                '<td width=\"50%\" style=\"padding-left:6px;vertical-align:top;\">' +\n                  '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n                    '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Preguntas bloqueantes</div>' +\n                    renderList(blocking_questions) +\n                  '</div>' +\n                '</td>' +\n              '</tr>' +\n            '</table>' +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;\">' +\n            '<div style=\"border:1px solid #e5e7eb;border-radius:16px;padding:14px;background:#ffffff;\">' +\n              '<div style=\"font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Próximo paso recomendado</div>' +\n              '<div style=\"margin-top:6px;color:#111827;font-size:14px;line-height:1.45;\">' + esc(next_step || '—') + '</div>' +\n              '<div style=\"margin-top:12px;font-size:12px;font-weight:800;color:#6b7280;letter-spacing:.06em;text-transform:uppercase;\">Notas internas</div>' +\n              '<div style=\"margin-top:6px;color:#374151;font-size:13px;line-height:1.45;\">' + esc(internal_notes || '—') + '</div>' +\n            '</div>' +\n          '</div>' +\n\n          '<div style=\"margin-top:16px;color:#6b7280;font-size:12px;line-height:1.4;\">' +\n            '<b>Motivos del análisis:</b> ' + esc(analysis_reasons.join(', ') || '—') +\n            (analysis_mode ? ('<br/><b>Modo de análisis:</b> ' + esc(analysis_mode)) : '') +\n          '</div>' +\n\n        '</td></tr>' +\n\n      '</table>' +\n    '</td></tr>' +\n  '</table>';\n\nreturn [{\n  json: {\n    subject,\n    html_report\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2896,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_025",
+      "name": "CODE_Build_HTML_Report"
+    },
+    {
+      "parameters": {
+        "sendTo": "user@example.com",
+        "subject": "={{ $node[\"CODE_Build_HTML_Report\"].json.subject }}",
+        "message": "={{ $node[\"CODE_Build_HTML_Report\"].json.html_report }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3104,
+        112
+      ],
+      "id": "SANITIZED_NODE_ID_026",
+      "name": "Send a message"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Pricing_Base",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "key",
+              "lookupValue": "={{ ($node[\"GS_Lead_Lookup\"].json.profile || $node[\"GS_Lead_Lookup\"].json.lead_profile || 'PYME') + '|' + ($node[\"GS_Lead_Lookup\"].json.complexity || $node[\"GS_Lead_Lookup\"].json.lead_complexity || 'MEDIUM') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -672,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_027",
+      "name": "GS_Pricing_Base",
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Pricing_Adjustments",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -496,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_028",
+      "name": "GS_Pricing_Adjustments",
+      "alwaysOutputData": true,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// CODE_Pricing_Compute (n8n Code node)\n// ✅ Pricing determinista: usa Pricing_Base + Pricing_Adjustments\n// ✅ Compatible con columnas: enabled / enable, adjustment_type, multiplier\n// ✅ Ajustes pueden venir de SET_Input o Lead (CSV o array)\n// ✅ Output: quote_low_final, quote_high_final, pricing_notes\n\nfunction toNum(v, fallback = 0) {\n  const n = Number(v);\n  return Number.isFinite(n) ? n : fallback;\n}\n\nfunction parseList(v) {\n  if (!v) return [];\n  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);\n  return String(v)\n    .split(/[,;\\n]/g)\n    .map(s => s.trim())\n    .filter(Boolean);\n}\n\nfunction roundTo(value, step = 50) {\n  const n = toNum(value, 0);\n  if (step <= 0) return Math.round(n);\n  return Math.round(n / step) * step;\n}\n\n// 1) Inputs\nconst setInput = $node[\"SET_Input\"]?.json ?? {};\nconst lead = $node[\"GS_Lead_Lookup\"]?.json ?? {};\n\n// 2) Base (rango) desde Pricing_Base\nconst baseRow = $node[\"GS_Pricing_Base\"]?.json ?? {};\nlet baseLow = toNum(baseRow.low, 0);\nlet baseHigh = toNum(baseRow.high, 0);\n\n// Guardrails base\nif (baseLow < 0) baseLow = 0;\nif (baseHigh < baseLow) baseHigh = baseLow;\n\n// 3) Leer tabla de ajustes\nlet adjRows = [];\ntry {\n  // Si el nodo devuelve múltiples items (recomendado)\n  adjRows = $node[\"GS_Pricing_Adjustments\"].all().map(x => x.json);\n} catch (e) {\n  // Fallback: si por alguna razón devuelve solo 1\n  const one = $node[\"GS_Pricing_Adjustments\"]?.json;\n  adjRows = one ? [one] : [];\n}\n\n// 4) Map adjustment_type -> multiplier (solo enabled=true)\nconst multMap = {};\nfor (const r of adjRows) {\n  const key = String(r.adjustment_type ?? r.Adjustment_type ?? \"\").trim();\n  if (!key) continue;\n\n  // soporte para enabled/enable y variaciones\n  const enabledRaw =\n    r.enabled ??\n    r.enable ??\n    r.Enabled ??\n    r.Enable ??\n    r.ENABLED ??\n    r.ENABLE ??\n    true; // si no existe columna, asumimos habilitado\n\n  const enabled =\n    enabledRaw === true ||\n    String(enabledRaw).toLowerCase() === \"true\" ||\n    String(enabledRaw) === \"1\";\n\n  if (!enabled) continue;\n\n  const mRaw = r.multiplier ?? r.Multiplier ?? 1;\n  const m = toNum(mRaw, 1);\n  multMap[key] = m;\n}\n\n// 5) Ajustes solicitados (3 fuentes posibles)\nconst fromSet = setInput.pricing_adjustments; // recomendado\nconst fromLead = lead.pricing_adjustments || lead.adjustments || \"\";\nlet adjustments = parseList(fromSet || fromLead);\n\n// default\nif (!adjustments.length) adjustments = [\"normal\"];\n\n// 6) Aplicar multiplicadores (en orden)\nlet finalMult = 1;\nconst notes = [];\n\nfor (const a of adjustments) {\n  const k = String(a).trim();\n  const m = multMap[k];\n\n  if (m === undefined) {\n    notes.push(`Ajuste '${k}' no existe en Pricing_Adjustments → ignorado`);\n    continue;\n  }\n\n  finalMult *= m;\n  notes.push(`Ajuste aplicado: ${k} (x${m})`);\n}\n\n// 7) Cálculo final\nlet quoteLow = baseLow * finalMult;\nlet quoteHigh = baseHigh * finalMult;\n\n// Guardrails extra (configurables desde SET_Input)\nconst floor = toNum(setInput.pricing_floor ?? 300, 300);     // mínimo absoluto\nconst ceil = toNum(setInput.pricing_ceil ?? 50000, 50000);   // techo\n\nquoteLow = Math.max(quoteLow, floor);\nquoteHigh = Math.max(quoteHigh, quoteLow);\n\nquoteLow = Math.min(quoteLow, ceil);\nquoteHigh = Math.min(quoteHigh, ceil);\n\n// Redondeo “bonito”\nconst roundStep = toNum(setInput.pricing_round_step ?? 50, 50);\nquoteLow = roundTo(quoteLow, roundStep);\nquoteHigh = roundTo(quoteHigh, roundStep);\n\n// 8) Output\nreturn [{\n  base_low: baseLow,\n  base_high: baseHigh,\n  final_multiplier: finalMult,\n  adjustments_applied: adjustments,\n  quote_low_final: quoteLow,\n  quote_high_final: quoteHigh,\n  pricing_notes: notes.join(\" | \"),\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_029",
+      "name": "CODE_Pricing_Compute"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "GS_Lead_Lookup": {
+      "main": [
+        [
+          {
+            "node": "GS_Transcript_Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Transcript_Lookup": {
+      "main": [
+        [
+          {
+            "node": "GS_Flow2Analysis_Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Flow2Analysis_Lookup": {
+      "main": [
+        [
+          {
+            "node": "GS_Extras_GetMany",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Extras_GetMany": {
+      "main": [
+        [
+          {
+            "node": "GS_Pricing_Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Build_Context": {
+      "main": [
+        [
+          {
+            "node": "IF_Mode_SKIP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI_Flow2_Analyzer": {
+      "main": [
+        [
+          {
+            "node": "CODE_Normalize_Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Normalize_Output": {
+      "main": [
+        [
+          {
+            "node": "IF_BlockingQuestions_Exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_Flow2_Row_Exists": {
+      "main": [
+        [
+          {
+            "node": "GS_Flow2_Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GS_Flow2_Append",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Flow2_Update": {
+      "main": [
+        [
+          {
+            "node": "IF_RunReportBuilder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_CosmeticChanged": {
+      "main": [
+        [
+          {
+            "node": "GS_Flow2_Update_Basic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TRG_Flow2_Webhook": {
+      "main": [
+        [
+          {
+            "node": "SET_Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SET_Input": {
+      "main": [
+        [
+          {
+            "node": "GS_Lead_Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_BlockingQuestions_Exist": {
+      "main": [
+        [
+          {
+            "node": "CODE_Flow3_BuildWindowPayload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_Flow2_Row_Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Leads_Update_OpenFlow3": {
+      "main": [
+        [
+          {
+            "node": "IF_Flow2_Row_Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Flow3_BuildWindowPayload": {
+      "main": [
+        [
+          {
+            "node": "GS_Leads_Update_OpenFlow3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_Mode_SKIP": {
+      "main": [
+        [
+          {
+            "node": "IF_CosmeticChanged",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_Mode_DEEP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_Mode_DEEP": {
+      "main": [
+        [
+          {
+            "node": "AI_Flow2_Analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_Mode_INCREMENTAL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_Mode_INCREMENTAL": {
+      "main": [
+        [
+          {
+            "node": "AI_Flow2_Analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI_Report_Builder_DEEP": {
+      "main": [
+        [
+          {
+            "node": "CODE_Normalize_Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Normalize_Report": {
+      "main": [
+        [
+          {
+            "node": "CODE_Build_HTML_Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_RunReportBuilder": {
+      "main": [
+        [
+          {
+            "node": "AI_Report_Builder_DEEP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Flow2_Append": {
+      "main": [
+        [
+          {
+            "node": "IF_RunReportBuilder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Build_HTML_Report": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "GS_Flow2_Update1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Pricing_Base": {
+      "main": [
+        [
+          {
+            "node": "GS_Pricing_Adjustments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Pricing_Adjustments": {
+      "main": [
+        [
+          {
+            "node": "CODE_Pricing_Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Pricing_Compute": {
+      "main": [
+        [
+          {
+            "node": "CODE_Build_Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "SANITIZED_INSTANCE_ID"
+  },
+  "tags": [],
+  "sanitized_note": "Public showcase version. Credentials, webhook IDs, production IDs, URLs, and sensitive AI prompts were removed or replaced with placeholders."
+}

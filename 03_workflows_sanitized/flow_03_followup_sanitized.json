@@ -1,0 +1,2368 @@
+{
+  "name": "FLOW_03_FOLLOWUP_WINDOW",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// CODE_Normalize_Flow3_Input (Webhook + Telegram Trigger compatible)\n\nconst root = $json || {};\nconst body = root.body || null;\n\n// Helpers\nconst toBool = (v) => v === true || v === \"true\" || v === 1 || v === \"1\";\n\n// Normaliza texto para comparar keywords\nconst normText = (s) =>\n  String(s || \"\")\n    .trim()\n    .toLowerCase()\n    .replace(/[¡!¿?.,;:()[\\]{}\"“”'’]/g, \" \")\n    .replace(/\\s+/g, \" \")\n    .trim();\n\n// Detecta keyword de cierre por texto\nconst isDoneFromText = (text) => {\n  const n = normText(text);\n  if (!n) return false;\n\n  // Puedes ajustar esta lista si quieres más keywords\n  const doneWords = [\n    \"listo\",\n    \"done\",\n    \"finalizar\",\n    \"terminar\",\n    \"cerrar\",\n    \"finish\",\n    \"completed\"\n  ];\n\n  // Frases comunes\n  const donePhrases = [\n    \"ok listo\",\n    \"ya listo\",\n    \"estoy listo\",\n    \"todo listo\",\n    \"listo ya\",\n    \"listo gracias\",\n    \"ya termine\",\n    \"ya terminé\",\n    \"terminado\",\n    \"finalizado\",\n    \"ya finalize\",\n    \"ya finalicé\"\n  ];\n\n  if (doneWords.includes(n)) return true;\n  if (donePhrases.includes(n)) return true;\n\n  // Si viene dentro de una oración: \"ok, listo. gracias\"\n  // (evita falsos positivos raros)\n  const tokens = n.split(\" \");\n  if (tokens.includes(\"listo\")) return true;\n  if (tokens.includes(\"done\")) return true;\n\n  return false;\n};\n\n// 1) Detectar Webhook (Flow1 -> Trigger_Flow3) (normalmente viene en body)\nconst candidateWebhook = body && (body.chat_id || body.event || body.mode || body.extras_limit !== undefined);\n\n// 2) Detectar Telegram Trigger (message / edited_message)\nconst t = root.message || root.edited_message || root;\n\n// -------------------------\n// A) ENTRADA DESDE WEBHOOK\n// -------------------------\nif (candidateWebhook) {\n  const p = body;\n\n  const text = String(p.text || \"\").trim();\n  const is_done_keyword =\n    toBool(p.is_done_keyword) || isDoneFromText(text); // <-- mejora: por si te mandan \"listo\" desde webhook\n\n  return [{\n    chat_id: p.chat_id ? String(p.chat_id) : null,\n    telegram_user_id: p.telegram_user_id ? String(p.telegram_user_id) : null,\n    username: p.username || \"\",\n    text,\n    hasVoice: toBool(p.hasVoice),\n    voice_file_id: p.voice_file_id ? String(p.voice_file_id) : null,\n    message_id: p.message_id ? String(p.message_id) : null,\n    is_done_keyword,\n    lang: String(p.lang || \"ES\").trim().toUpperCase(),\n    event: p.event ? String(p.event) : null,     // \"open_window\"\n    mode: p.mode ?? \"auto\",\n    extras_limit: Number.isFinite(p.extras_limit) ? p.extras_limit : parseInt(p.extras_limit ?? 15, 10),\n    send_internal_email: !!p.send_internal_email,\n    force_refresh: !!p.force_refresh,\n    internal_notes: String(p.internal_notes || \"\"),\n    source: p.source || \"flow1_webhook\",\n    raw: root\n  }];\n}\n\n// -------------------------\n// B) ENTRADA DESDE TELEGRAM\n// -------------------------\nconst u = t;\n\nconst chat_id =\n  (u?.chat?.id != null ? String(u.chat.id) : null) ||\n  (u?.chat_id != null ? String(u.chat_id) : null) ||\n  null;\n\nconst telegram_user_id =\n  (u?.from?.id != null ? String(u.from.id) : null) ||\n  null;\n\nconst username =\n  u?.from?.username ||\n  [u?.from?.first_name, u?.from?.last_name].filter(Boolean).join(\" \").trim() ||\n  \"\";\n\nconst message_id =\n  (u?.message_id != null ? String(u.message_id) : null) ||\n  null;\n\nconst text = String(u?.text || u?.caption || \"\").trim();\n\nlet hasVoice = !!u?.voice;\nlet voice_file_id = u?.voice?.file_id || null;\n\n// compat: audio\nif (!hasVoice && u?.audio?.file_id) {\n  hasVoice = true;\n  voice_file_id = u.audio.file_id;\n}\n\n// ✅ mejora clave: detectar \"listo\" aquí mismo\nconst is_done_keyword = isDoneFromText(text);\n\nreturn [{\n  chat_id,\n  telegram_user_id,\n  username,\n  text,\n  hasVoice,\n  voice_file_id: voice_file_id ? String(voice_file_id) : null,\n  message_id,\n  is_done_keyword,                 // <-- ahora sí viene true cuando escriben \"listo\"\n  lang: \"ES\",                      // opcional: puedes mapear desde Sheet luego\n  event: null,\n  mode: null,\n  extras_limit: null,\n  send_internal_email: null,\n  force_refresh: null,\n  internal_notes: \"\",\n  source: \"telegram\",\n  raw: root\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2272,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_001",
+      "name": "CODE_Normalize_Flow3_Input"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chat_id",
+              "lookupValue": "={{ Number($json.chat_id) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -2096,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_002",
+      "name": "GS_Lead_Lookup",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "da08a3f4-64c4-4ab9-9ca2-41374a68bb09",
+              "leftValue": "={{\n  (() => {\n    const row = $node[\"GS_Lead_Lookup\"].json;\n\n    const opened = String(row.flow3_opened_at || '').trim();\n    const expires = String(row.flow3_expires_at || '').trim();\n    const closed = String(row.flow3_closed_at || '').trim();\n\n    if (!opened || !expires) return false;   // nunca se abrió ventana\n    if (closed) return false;                // ya cerrada\n\n    const expMs = Date.parse(expires);\n    if (!Number.isFinite(expMs)) return false;\n\n    return Date.now() < expMs;               // vigente\n  })()\n}}",
+              "rightValue": "FLOW3_WAITING",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -784,
+        128
+      ],
+      "id": "SANITIZED_NODE_ID_003",
+      "name": "IF_StillWaiting"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+            "flow_state": "FLOW3_CLOSED",
+            "flow3_closed_at": "={{ new Date().toISOString() }}",
+            "flow3_last_message_at": "={{ $now }}",
+            "updated_at": "={{ $now }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_user_id",
+              "displayName": "telegram_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_question",
+              "displayName": "last_question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q1_name",
+              "displayName": "q1_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q2_email",
+              "displayName": "q2_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q3_company",
+              "displayName": "q3_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q4_tools",
+              "displayName": "q4_tools",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q5_goal",
+              "displayName": "q5_goal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_concat",
+              "displayName": "voice_concat",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_count",
+              "displayName": "voice_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_last_at",
+              "displayName": "voice_last_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "ai_summary",
+              "displayName": "ai_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "full_profile",
+              "displayName": "full_profile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "client_summary",
+              "displayName": "client_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tech_summary",
+              "displayName": "tech_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow_state",
+              "displayName": "flow_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_request_id",
+              "displayName": "flow3_request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_questions",
+              "displayName": "flow3_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_opened_at",
+              "displayName": "flow3_opened_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_closed_at",
+              "displayName": "flow3_closed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_last_message_at",
+              "displayName": "flow3_last_message_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_expires_at",
+              "displayName": "flow3_expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow1_done_at",
+              "displayName": "flow1_done_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow2_ready_at",
+              "displayName": "flow2_ready_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -992,
+        -304
+      ],
+      "id": "SANITIZED_NODE_ID_004",
+      "name": "GS_Leads_Close_Flow3",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_N8N_DOMAIN/webhook/flow2-auto-trigger",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{ $node['CODE_Normalize_Flow3_Input'].json.chat_id }}\",\n  \"mode\": \"force_refresh\",\n  \"force_refresh\": true,\n  \"source\": \"flow3_done\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -528,
+        -320
+      ],
+      "id": "SANITIZED_NODE_ID_005",
+      "name": "HTTP_Trigger_Flow2_ForceRefresh"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+        "text": "={{\n  ($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\"\n  ? \n  \"Perfect ✅ We have received all the information.\\n\\nThe information window has now been closed and our system will begin the final analysis of your case.\\n\\nOnce the evaluation is completed, you will receive the full report and recommendations by email.\"\n  :\n  \"Perfecto ✅ Hemos recibido toda la información.\\n\\nLa ventana de envío de información ha sido cerrada y ahora comenzaremos el análisis final de tu caso.\\n\\nCuando la evaluación esté lista, recibirás el informe completo con las recomendaciones por correo.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -240,
+        -320
+      ],
+      "id": "SANITIZED_NODE_ID_006",
+      "name": "TG_Confirm_Closing"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9293b5c3-7a30-4219-a5f2-621553171862",
+              "leftValue": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.hasVoice }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -592,
+        16
+      ],
+      "id": "SANITIZED_NODE_ID_007",
+      "name": "IF_HasVoice"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $node[\"CODE_Normalize_Flow3_Input\"].json;\nconst lead = $node[\"GS_Lead_Lookup\"].json;\n\nconst nowIso = new Date().toISOString();\n\nfunction safeStr(v) {\n  if (v === null || v === undefined) return \"\";\n  return String(v).trim();\n}\n\nfunction compactText(str, maxLen = 500) {\n  const s = safeStr(str).replace(/\\s+/g, \" \");\n  return s.length > maxLen ? s.slice(0, maxLen) + \"…\" : s;\n}\n\n// 1) transcript SOLO si hay voz\nlet transcript = \"\";\nif (input.hasVoice) {\n  const ai = $node[\"AI_Transcribe_Voice\"].json || {};\n  transcript = safeStr(ai.text || ai.transcript || \"\");\n}\n\n// 2) content final: voz -> transcript / texto -> input.text\nconst content = input.hasVoice\n  ? transcript\n  : safeStr(input.text);\n\n// 3) safety: si no hay contenido útil\nif (!content) {\n  return [{\n    chat_id: safeStr(input.chat_id),\n    extra_id: `F3-${safeStr(lead.flow3_request_id || input.chat_id)}-${safeStr(input.message_id || Math.random().toString(36).slice(2, 8))}`,\n    source: \"flow3\",\n    from: input.hasVoice ? \"voice\" : \"text\",\n    received_at: nowIso,\n    content_type: input.hasVoice ? \"transcript\" : \"text\",\n    content: \"\",\n    raw: JSON.stringify(input),\n    raw_compact: \"\",\n    tags: \"flow3_empty\"\n  }];\n}\n\n// 4) extra_id estable\nconst extra_id = `F3-${safeStr(lead.flow3_request_id || input.chat_id)}-${safeStr(input.message_id || Math.random().toString(36).slice(2, 8))}`;\n\n// 5) raw estructurado\nconst rawPayload = input.hasVoice\n  ? {\n      input,\n      transcript\n    }\n  : input;\n\n// 6) raw compact para lectura rápida\nconst raw_compact = compactText(content, 300);\n\nreturn [{\n  chat_id: safeStr(input.chat_id),\n  extra_id,\n  source: \"flow3\",\n  from: input.hasVoice ? \"voice\" : \"text\",\n  received_at: nowIso,\n  content_type: input.hasVoice ? \"transcript\" : \"text\",\n  content,\n  raw: JSON.stringify(rawPayload),\n  raw_compact,\n  tags: \"flow3\"\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        32
+      ],
+      "id": "SANITIZED_NODE_ID_008",
+      "name": "CODE_Build_ExtraRecord"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+        "text": "={{\n  ($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\"\n  ? \"✅ Got it.\\n\\nYou can continue sending additional details.\\n\\nWhen you finish, type *DONE*.\"\n  : \"✅ Perfecto, información recibida.\\n\\nPuedes seguir enviando más detalles.\\n\\nCuando termines, escribe *LISTO*.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        736,
+        32
+      ],
+      "id": "SANITIZED_NODE_ID_009",
+      "name": "TG_Ack_ExtraSaved"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "GOOGLE_SHEET_ID_PLACEHOLDER",
+              "leftValue": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.is_done_keyword }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1264,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_010",
+      "name": "IF_IsDoneKeyword"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+        "text": "={{\n  (($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\")\n  ? \"✅ The extra-info step is no longer active. We’re already moving forward with the review.\"\n  : \"✅ La etapa de extras ya no está activa. Ya estamos avanzando con la revisión.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -592,
+        240
+      ],
+      "id": "SANITIZED_NODE_ID_011",
+      "name": "TG_NotWaiting"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+        "text": "={{\n  (($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\")\n  ? \"⏳ The extra-information window has closed.\\nIf you need to add anything else, we can do it in a second stage.\"\n  : \"⏳ La ventana para agregar información adicional ya cerró.\\nSi necesitas agregar algo más, lo hacemos en una segunda etapa.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -64,
+        448
+      ],
+      "id": "SANITIZED_NODE_ID_012",
+      "name": "TG_WindowClosed"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.voice_file_id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -416,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_013",
+      "name": "TG_GetFile_Voice"
+    },
+    {
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        -48,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_014",
+      "name": "AI_Transcribe_Voice"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Flow2_Extras",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"CODE_Build_ExtraRecord\"].json.chat_id }}",
+            "extra_id": "={{ $node[\"CODE_Build_ExtraRecord\"].json.extra_id }}",
+            "source": "={{ $node[\"CODE_Build_ExtraRecord\"].json.source }}",
+            "received_at": "={{ $node[\"CODE_Build_ExtraRecord\"].json.received_at }}",
+            "content_type": "={{ $node[\"CODE_Build_ExtraRecord\"].json.content_type }}",
+            "content": "={{ $node[\"CODE_Build_ExtraRecord\"].json.content }}",
+            "raw": "={{ $node[\"CODE_Build_ExtraRecord\"].json.raw }}",
+            "tags": "={{ $node[\"CODE_Build_ExtraRecord\"].json.tags }}",
+            "from": "={{ $node[\"CODE_Build_ExtraRecord\"].json.from }}",
+            "raw_compact": "={{ $node[\"CODE_Build_ExtraRecord\"].json.raw_compact }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "extra_id",
+              "displayName": "extra_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from",
+              "displayName": "from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "content_type",
+              "displayName": "content_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "content",
+              "displayName": "content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw",
+              "displayName": "raw",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tags",
+              "displayName": "tags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_compact",
+              "displayName": "raw_compact",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        336,
+        32
+      ],
+      "id": "SANITIZED_NODE_ID_015",
+      "name": "GS_Flow3Extras_Append",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"CODE_Build_ExtraRecord\"].json.chat_id }}",
+            "updated_at": "{{ $now }}",
+            "flow3_last_message_at": "{{ $now }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_user_id",
+              "displayName": "telegram_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_question",
+              "displayName": "last_question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q1_name",
+              "displayName": "q1_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q2_email",
+              "displayName": "q2_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q3_company",
+              "displayName": "q3_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q4_tools",
+              "displayName": "q4_tools",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q5_goal",
+              "displayName": "q5_goal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_concat",
+              "displayName": "voice_concat",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_count",
+              "displayName": "voice_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_last_at",
+              "displayName": "voice_last_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "ai_summary",
+              "displayName": "ai_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "full_profile",
+              "displayName": "full_profile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "client_summary",
+              "displayName": "client_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tech_summary",
+              "displayName": "tech_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow_state",
+              "displayName": "flow_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_request_id",
+              "displayName": "flow3_request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_questions",
+              "displayName": "flow3_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_opened_at",
+              "displayName": "flow3_opened_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_closed_at",
+              "displayName": "flow3_closed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_last_message_at",
+              "displayName": "flow3_last_message_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow3_expires_at",
+              "displayName": "flow3_expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow1_done_at",
+              "displayName": "flow1_done_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow2_ready_at",
+              "displayName": "flow2_ready_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        544,
+        32
+      ],
+      "id": "SANITIZED_NODE_ID_016",
+      "name": "GS_Leads_Update_Flow3_LastMessage",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.result.file_id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -240,
+        -112
+      ],
+      "id": "SANITIZED_NODE_ID_017",
+      "name": "TG_Download_Voice"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{\n  (($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\")\n  ? \"✅ The additional-information window is already closed.\\nYour request is now being analyzed.\\n\\nIf you remember something important later, we can add it in a second stage.\"\n  : \"✅ La ventana de información adicional ya está cerrada.\\nTu solicitud ya está en proceso de análisis.\\n\\nSi luego recuerdas algo importante, podemos agregarlo en una segunda etapa.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1248,
+        -272
+      ],
+      "id": "SANITIZED_NODE_ID_018",
+      "name": "TG_AlreadyClosed"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "48202fa8-963a-4200-a43f-82a86dee266e",
+              "leftValue": "={{ !!$node[\"GS_Lead_Lookup\"].json.flow3_closed_at }}",
+              "rightValue": "FLOW3_CLOSED",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1680,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_019",
+      "name": "IF_AlreadyClosed"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "flow3-auto-trigger",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2480,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_020",
+      "name": "Webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0ce3e473-d980-49f1-a3a7-6ad75ef0f268",
+              "leftValue": "={{\n  (() => {\n    const openedRaw = $node[\"GS_Lead_Lookup\"].json.flow3_opened_at;\n    const expiresRaw = $node[\"GS_Lead_Lookup\"].json.flow3_expires_at;\n\n    const opened = String(openedRaw || '').replace(/\\s+/g,'').trim();\n    const expires = String(expiresRaw || '').replace(/\\s+/g,'').trim();\n\n    if (!opened || !expires) return false;\n\n    const expMs = Date.parse(expires);\n    if (!Number.isFinite(expMs)) return false;\n\n    return Date.now() < expMs;\n  })()\n}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -992,
+        144
+      ],
+      "id": "SANITIZED_NODE_ID_021",
+      "name": "IF_WithinWindow_24h"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.chat_id }}",
+            "flow_state": "FLOW3_CLOSED",
+            "flow3_closed_at": "={{ $now }}",
+            "flow3_last_message_at": "={{ $now }}",
+            "updated_at": "={{ $now }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_user_id",
+              "displayName": "telegram_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_question",
+              "displayName": "last_question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q1_name",
+              "displayName": "q1_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q2_email",
+              "displayName": "q2_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q3_company",
+              "displayName": "q3_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q4_tools",
+              "displayName": "q4_tools",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q5_goal",
+              "displayName": "q5_goal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_concat",
+              "displayName": "voice_concat",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_count",
+              "displayName": "voice_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_last_at",
+              "displayName": "voice_last_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "ai_summary",
+              "displayName": "ai_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "full_profile",
+              "displayName": "full_profile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "client_summary",
+              "displayName": "client_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tech_summary",
+              "displayName": "tech_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow_state",
+              "displayName": "flow_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_request_id",
+              "displayName": "flow3_request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_questions",
+              "displayName": "flow3_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_opened_at",
+              "displayName": "flow3_opened_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_closed_at",
+              "displayName": "flow3_closed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_last_message_at",
+              "displayName": "flow3_last_message_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_expires_at",
+              "displayName": "flow3_expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow1_done_at",
+              "displayName": "flow1_done_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "flow2_ready_at",
+              "displayName": "flow2_ready_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -800,
+        448
+      ],
+      "id": "SANITIZED_NODE_ID_022",
+      "name": "GS_Leads_Close_Flow",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_N8N_DOMAIN/webhook/flow2-auto-trigger",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chat_id\": \"{{$node['GS_Lead_Lookup'].json.chat_id || $json.chat_id}}\",\n  \"mode\": \"auto\",\n  \"extras_limit\": 15,\n  \"send_internal_email\": true,\n  \"force_refresh\": false,\n  \"internal_notes\": \"Auto-run: ventana de 24h vencida\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -288,
+        448
+      ],
+      "id": "SANITIZED_NODE_ID_023",
+      "name": "HTTP_Trigger_Flow2_ForAuto"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5e6869f0-5512-43f6-845b-ddbfcd24e5fe",
+              "leftValue": "={{ ![\"FLOW2_RUNNING\",\"FLOW2_DONE\"].includes(($node[\"GS_Lead_Lookup\"].json.status || \"\").toString().toUpperCase()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -768,
+        -304
+      ],
+      "id": "SANITIZED_NODE_ID_024",
+      "name": "IF_NotAlreadyProcessed"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5e6869f0-5512-43f6-845b-ddbfcd24e5fe",
+              "leftValue": "={{ ![\"FLOW2_RUNNING\",\"FLOW2_DONE\"].includes(($node[\"GS_Lead_Lookup\"].json.status || \"\").toString().toUpperCase()) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -544,
+        448
+      ],
+      "id": "SANITIZED_NODE_ID_025",
+      "name": "IF_NotAlreadyProcessed1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5867459a-d3f3-47bf-a0da-eba7e45c695c",
+              "leftValue": "={{ $node[\"CODE_Normalize_Flow3_Input\"].json.event === \"open_window\" }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1904,
+        -16
+      ],
+      "id": "SANITIZED_NODE_ID_026",
+      "name": "IF_IsOpenWindowEvent"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID_PLACEHOLDER",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $('CODE_Normalize_Flow3_Input').item.json.chat_id }}",
+            "flow_state": "FLOW3_WAITING",
+            "flow3_opened_at": "={{ new Date().toISOString() }}",
+            "flow3_expires_at": "={{ new Date(Date.now() + 24*60*60*1000).toISOString() }}",
+            "flow3_last_message_at": "={{ new Date().toISOString() }}"
+          },
+          "matchingColumns": [
+            "chat_id"
+          ],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_user_id",
+              "displayName": "telegram_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lang",
+              "displayName": "lang",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "last_question",
+              "displayName": "last_question",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q1_name",
+              "displayName": "q1_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q2_email",
+              "displayName": "q2_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q3_company",
+              "displayName": "q3_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q4_tools",
+              "displayName": "q4_tools",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "q5_goal",
+              "displayName": "q5_goal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_concat",
+              "displayName": "voice_concat",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_count",
+              "displayName": "voice_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "voice_last_at",
+              "displayName": "voice_last_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "ai_summary",
+              "displayName": "ai_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "full_profile",
+              "displayName": "full_profile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "client_summary",
+              "displayName": "client_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tech_summary",
+              "displayName": "tech_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow_state",
+              "displayName": "flow_state",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_request_id",
+              "displayName": "flow3_request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_questions",
+              "displayName": "flow3_questions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_opened_at",
+              "displayName": "flow3_opened_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_closed_at",
+              "displayName": "flow3_closed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow3_last_message_at",
+              "displayName": "flow3_last_message_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow3_expires_at",
+              "displayName": "flow3_expires_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flow1_done_at",
+              "displayName": "flow1_done_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "flow2_ready_at",
+              "displayName": "flow2_ready_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1728,
+        -288
+      ],
+      "id": "SANITIZED_NODE_ID_027",
+      "name": "GS_OpenWindow_Flow3",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{\n  ($node[\"GS_Lead_Lookup\"].json.lang || \"ES\").toUpperCase() === \"EN\"\n  ? \"✅ I now have an initial understanding of your needs.\\n\\nIf you’d like the analysis to be more accurate, you can add more details now (text or voice).\\n\\nFor example:\\n• How your process works step by step\\n• Tasks you currently do manually\\n• What takes most of your time\\n• What you would like to change or improve\\n\\n👉 Send any additional information here.\\n👉 When you’re done (even if you don’t want to add anything else), type *DONE*.\\n\\n⏳ If you don’t send anything else, I will continue with the current information in the next few hours.\"\n  : \"✅ Ya tengo una idea inicial de tus necesidades.\\n\\nSi quieres que el análisis sea más preciso, puedes agregar más detalles ahora (texto o audio).\\n\\nPor ejemplo:\\n• Cómo realizas el proceso paso a paso\\n• Qué tareas haces manualmente\\n• Qué parte te toma más tiempo\\n• Qué te gustaría cambiar o mejorar\\n\\n👉 Envía la información adicional por aquí.\\n👉 Cuando termines (incluso si no deseas agregar más), escribe *LISTO*.\\n\\n⏳ Si no envías nada más, continuaré con la información actual en las próximas horas.\"\n}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1536,
+        -288
+      ],
+      "id": "SANITIZED_NODE_ID_028",
+      "name": "TG_AlreadyClosed1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "CODE_Normalize_Flow3_Input": {
+      "main": [
+        [
+          {
+            "node": "GS_Lead_Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Lead_Lookup": {
+      "main": [
+        [
+          {
+            "node": "IF_IsOpenWindowEvent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_StillWaiting": {
+      "main": [
+        [
+          {
+            "node": "IF_HasVoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TG_NotWaiting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_Trigger_Flow2_ForceRefresh": {
+      "main": [
+        [
+          {
+            "node": "TG_Confirm_Closing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Leads_Close_Flow3": {
+      "main": [
+        [
+          {
+            "node": "IF_NotAlreadyProcessed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_HasVoice": {
+      "main": [
+        [
+          {
+            "node": "TG_GetFile_Voice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE_Build_ExtraRecord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE_Build_ExtraRecord": {
+      "main": [
+        [
+          {
+            "node": "GS_Flow3Extras_Append",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_IsDoneKeyword": {
+      "main": [
+        [
+          {
+            "node": "GS_Leads_Close_Flow3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_WithinWindow_24h",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG_GetFile_Voice": {
+      "main": [
+        [
+          {
+            "node": "TG_Download_Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI_Transcribe_Voice": {
+      "main": [
+        [
+          {
+            "node": "CODE_Build_ExtraRecord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Flow3Extras_Append": {
+      "main": [
+        [
+          {
+            "node": "GS_Leads_Update_Flow3_LastMessage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Leads_Update_Flow3_LastMessage": {
+      "main": [
+        [
+          {
+            "node": "TG_Ack_ExtraSaved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TG_Download_Voice": {
+      "main": [
+        [
+          {
+            "node": "AI_Transcribe_Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_AlreadyClosed": {
+      "main": [
+        [
+          {
+            "node": "TG_AlreadyClosed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_IsDoneKeyword",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "CODE_Normalize_Flow3_Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_WithinWindow_24h": {
+      "main": [
+        [
+          {
+            "node": "IF_StillWaiting",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GS_Leads_Close_Flow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP_Trigger_Flow2_ForAuto": {
+      "main": [
+        [
+          {
+            "node": "TG_WindowClosed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_Leads_Close_Flow": {
+      "main": [
+        [
+          {
+            "node": "IF_NotAlreadyProcessed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_NotAlreadyProcessed": {
+      "main": [
+        [
+          {
+            "node": "HTTP_Trigger_Flow2_ForceRefresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_NotAlreadyProcessed1": {
+      "main": [
+        [
+          {
+            "node": "HTTP_Trigger_Flow2_ForAuto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_IsOpenWindowEvent": {
+      "main": [
+        [
+          {
+            "node": "GS_OpenWindow_Flow3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF_AlreadyClosed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GS_OpenWindow_Flow3": {
+      "main": [
+        [
+          {
+            "node": "TG_AlreadyClosed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "SANITIZED_INSTANCE_ID"
+  },
+  "tags": [],
+  "sanitized_note": "Public showcase version. Credentials, webhook IDs, production IDs, URLs, and sensitive AI prompts were removed or replaced with placeholders."
+}
